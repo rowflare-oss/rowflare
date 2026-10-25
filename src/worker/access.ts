@@ -8,7 +8,7 @@ import type { Member, Role } from "../shared/types";
 
 /** RPC view of the Base Durable Object (workers-types maps `unknown` payloads to never, so type it directly). */
 export type BaseStub = {
-  [K in "init" | "destroy" | "setMembers" | "schema" | "query" | "rows" | "aggregate" | "aggregateRecords" | "exportCsv" | "findTable" | "rowOp" | "schemaOp" | "startAirtableImport" | "automationList" | "automationOp" | "automationRuns" | "webhook" | "runButton" | "testRun" | "retryRun" | "aiWake" | "aiGenerate" | "aiStop" | "aiStatus" | "aiPreview" | "checkRoom" | "noteFile" | "storageScan" | "filesSwept" | "usageSummary" | "planChanged"]: BaseDO[K] extends (...a: infer A) => infer R
+  [K in "init" | "destroy" | "setMembers" | "schema" | "query" | "rows" | "explainPath" | "aggregate" | "aggregateRecords" | "exportCsv" | "findTable" | "rowOp" | "schemaOp" | "startAirtableImport" | "automationList" | "automationOp" | "automationRuns" | "webhook" | "runButton" | "testRun" | "retryRun" | "aiWake" | "aiGenerate" | "aiStop" | "aiStatus" | "aiPreview" | "checkRoom" | "noteFile" | "storageScan" | "filesSwept" | "usageSummary" | "planChanged"]: BaseDO[K] extends (...a: infer A) => infer R
     ? (...a: A) => Promise<Awaited<R>>
     : never;
 } & { fetch(req: Request): Promise<Response> };

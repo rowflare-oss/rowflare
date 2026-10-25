@@ -119,3 +119,9 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); pad
 .ai-preview-answer { padding: 8px 10px; border-radius: 6px; background: var(--panel, #fff); border: 1px solid var(--line); white-space: pre-wrap; max-height: 160px; overflow: auto; align-self: stretch; }
 .ai-record-state { gap: 10px; margin-top: 4px; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+.path-links { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
+.path-values { display: flex; flex-direction: column; gap: 4px; }
+.path-value { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.chip-btn { border: 0; cursor: pointer; font: inherit; }
+.chip-btn:disabled { cursor: default; }
+.path-why { flex-basis: 100%; padding-left: 4px; }

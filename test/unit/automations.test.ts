@@ -107,3 +107,12 @@ describe("automation helpers", () => {
     expect(parseHm("9:05")).toBeNull();
   });
 });
+
+describe("automation conditions and path lookups", () => {
+  it("refuses path lookups in trigger conditions", () => {
+    const s = { ...schema, fields: [...schema.fields, fld("fldPath", "Used by", "pathLookup")] };
+    const conditions = { conjunction: "and" as const, conditions: [{ fieldId: "fldPath", op: "empty" as const }] };
+    expect(validateAutomation(cfg({ type: "recordMatches", tableId: "tblA", conditions }), s)).toMatch(/path lookup/i);
+    expect(validateAutomation(cfg({ type: "dateReached", tableId: "tblA", fieldId: "fldDue", offsetMinutes: 0, tz: "UTC", conditions } as AutomationConfig["trigger"]), s)).toMatch(/path lookup/i);
+  });
+});

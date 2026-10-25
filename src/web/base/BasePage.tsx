@@ -138,6 +138,7 @@ function BaseShell({ client, tableId: tableParam, viewId: viewParam, dashboardId
   const handlers: GridHandlers = useMemo(
     () => ({
       onExpand: id => setExpanded(id),
+      onOpenRecord: (tableId, id) => setDashRecord({ tableId, id }),
       onEditField: (fieldId, anchor) => setFieldDialog({ anchor, fieldId }),
       onInsertField: (anchor, position) => setFieldDialog({ anchor, position }),
     }),
@@ -417,10 +418,11 @@ function BaseShell({ client, tableId: tableParam, viewId: viewParam, dashboardId
         </div>
       )}
 
+      {expanded !== null && view && <RecordModal client={client} view={view} rowId={expanded} onClose={() => setExpanded(null)} onNavigate={setExpanded} onOpenRecord={(tableId, id) => setDashRecord({ tableId, id })} />}
+      {/* Records opened from another record or a dashboard stack on top. */}
       {dashRecord && client.viewsOf(dashRecord.tableId)[0] && (
-        <RecordModal client={client} view={client.viewsOf(dashRecord.tableId)[0]} rowId={dashRecord.id} onClose={() => setDashRecord(null)} onNavigate={id => setDashRecord({ ...dashRecord, id })} />
+        <RecordModal client={client} view={client.viewsOf(dashRecord.tableId)[0]} rowId={dashRecord.id} onClose={() => setDashRecord(null)} onNavigate={id => setDashRecord({ ...dashRecord, id })} onOpenRecord={(tableId, id) => setDashRecord({ tableId, id })} />
       )}
-      {expanded !== null && view && <RecordModal client={client} view={view} rowId={expanded} onClose={() => setExpanded(null)} onNavigate={setExpanded} />}
       {fieldDialog && table && (
         <FieldDialog
           client={client}

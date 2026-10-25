@@ -47,6 +47,7 @@ const PATHS: Record<string, string> = {
   attachment: "M15 7l-7 7a2.5 2.5 0 0 0 3.5 3.5l7.5-7.5a4.5 4.5 0 0 0-6.5-6.5L5 11",
   lookup: "M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12zM20 20l-5.5-5.5",
   rollup: "M5 4h14l-7 8 7 8H5",
+  pathLookup: "M3 9h4v4H3zM17 3h4v4h-4zM17 17h4v4h-4zM7 11h4V5h6M11 11v8h6",
   formula: "M14 4h-2a3 3 0 0 0-3 3v13M6 10h7M15 13l5 6M20 13l-5 6",
   user: "M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 21a8 8 0 0 1 16 0",
   email: "M3 6h18v12H3zM3 7l9 6 9-6",
@@ -98,17 +99,25 @@ export function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { 
   );
 }
 
+/** Open modals, newest last: Escape closes only the one on top (a record opened from another record). */
+const openModals: object[] = [];
+
 export function Modal({ title, onClose, children, width = 560, footer }: { title?: ReactNode; onClose: () => void; children: ReactNode; width?: number; footer?: ReactNode }) {
+  const [self] = useState(() => ({}));
+  useEffect(() => {
+    openModals.push(self);
+    return () => void openModals.splice(openModals.indexOf(self), 1);
+  }, [self]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && openModals[openModals.length - 1] === self) {
         e.stopPropagation();
         onClose();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  }, [onClose, self]);
   return createPortal(
     <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ width }} role="dialog" aria-modal="true">

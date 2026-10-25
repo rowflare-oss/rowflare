@@ -113,7 +113,7 @@ function FilterPanel({ client, view, anchor, onClose }: { client: BaseClient; vi
 }
 
 function SortPanel({ client, view, anchor, onClose }: { client: BaseClient; view: View; anchor: HTMLElement; onClose: () => void }) {
-  const fields = client.fields(view.tableId);
+  const fields = client.fields(view.tableId).filter(f => f.type !== "pathLookup");
   const sorts = view.config.sorts ?? [];
   const set = (next: SortSpec[]) => client.updateViewConfig(view.id, { sorts: next }, 200);
   return (
@@ -139,7 +139,7 @@ function SortPanel({ client, view, anchor, onClose }: { client: BaseClient; view
   );
 }
 
-const NOT_GROUPABLE = new Set(["attachment", "longText", "autonumber", "button"]);
+const NOT_GROUPABLE = new Set(["attachment", "longText", "autonumber", "button", "pathLookup"]);
 
 function GroupPanel({ client, view, anchor, onClose }: { client: BaseClient; view: View; anchor: HTMLElement; onClose: () => void }) {
   const levels = view.config.groups ?? [];

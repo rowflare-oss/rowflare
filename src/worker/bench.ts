@@ -140,6 +140,159 @@ function stats(store: BaseStore) {
   };
 }
 
+// ---------- path lookup scenario ----------
+// Shape of the k05 s25 synthetic account graph: emails, GitHub and Google accounts registered with an email,
+// platform accounts that sign in with GitHub, Google or an email, and recovery emails (30% of emails, loops allowed).
+
+const PATH_SIZES = { emails: 50_000, github: 20_000, google: 15_000, accounts: 150_000, platforms: 20 };
+const PATH_CHUNK = 10_000;
+
+interface PathBench {
+  t: Record<"emails" | "github" | "google" | "accounts", string>;
+  f: Record<string, string>;
+  stage: number;
+  done: number;
+}
+
+function pathIds(store: BaseStore): PathBench {
+  const raw = store.meta("pathbench");
+  if (!raw) throw new Error("Path bench base not set up");
+  return JSON.parse(raw);
+}
+
+/**
+ * Builds the scenario one chunk per call (a Durable Object request must stay short); call until `finished`.
+ * With `match`, GitHub accounts name their email as text in a field set to match Emails.Address instead of a link,
+ * and the random draws are the same, so both shapes give the same answer.
+ */
+function pathSeed(store: BaseStore, match: boolean): unknown {
+  if (!store.meta("pathbench")) {
+    store.init("pathbench");
+    const table = (name: string, fields: Parameters<BaseStore["createTable"]>[1]["fields"]) => store.createTable(ACTOR, { name, fields, emptyRows: 0 }).tableId;
+    const t = {
+      emails: table("Emails", [{ name: "Address", type: "text" }]),
+      github: table("GitHub", [{ name: "Login", type: "text" }]),
+      google: table("Google", [{ name: "Account", type: "text" }]),
+      accounts: table("Accounts", [{ name: "Handle", type: "text" }, { name: "Platform", type: "singleSelect", options: { choices: defaultChoices(Array.from({ length: PATH_SIZES.platforms }, (_, i) => "p" + i)) } }]),
+    };
+    const link = (from: string, name: string, to: string) => store.createField(from, { name, type: "link", options: { linkedTableId: to } }).fieldId;
+    const address = store.fieldsOf(t.emails)[0].id;
+    const textEmail = (name: string, m?: string) => store.createField(t.github, { name, type: "text", options: m ? { match: { fieldId: m } } : {} }).fieldId;
+    const f = {
+      ghEmail: match ? textEmail("Email", address) : link(t.github, "Email", t.emails),
+      ...(match ? { emailCopy: textEmail("Email copy") } : {}),
+      ggEmail: link(t.google, "Email", t.emails),
+      recovery: link(t.emails, "Recovery email", t.emails),
+      accEmail: link(t.accounts, "Email", t.emails),
+      accGithub: link(t.accounts, "GitHub", t.github),
+      accGoogle: link(t.accounts, "Google", t.google),
+    };
+    const name = (tid: string) => store.fieldsOf(tid)[0].id;
+    store.setMeta("pathbench", JSON.stringify({ t, f: { ...f, address: name(t.emails), login: name(t.github), account: name(t.google), handle: name(t.accounts), platform: store.fieldsOf(t.accounts)[1].id }, stage: 0, done: 0 }));
+  }
+  const b = pathIds(store);
+  const r = rng(7000 + b.stage * 1000 + b.done);
+  const ids = (tid: string) => store.query(tid, { limit: 0 }).ids;
+  const n = (k: keyof typeof PATH_SIZES) => Math.min(PATH_CHUNK, PATH_SIZES[k] - b.done);
+  const add = (tid: string, rows: { cells: Record<string, unknown> }[]) => {
+    for (let i = 0; i < rows.length; i += 2000) store.createRows(ACTOR, tid, rows.slice(i, i + 2000), { noTriggers: true, noLimit: true });
+  };
+  const next = (size: number) => {
+    b.done += size;
+    if (size === 0 || b.done >= [PATH_SIZES.emails, PATH_SIZES.github, PATH_SIZES.google, Math.floor(PATH_SIZES.emails * 0.3), PATH_SIZES.accounts][b.stage]) {
+      b.stage++;
+      b.done = 0;
+    }
+  };
+  switch (b.stage) {
+    case 0: {
+      const k = n("emails");
+      add(b.t.emails, Array.from({ length: k }, (_, i) => ({ cells: { [b.f.address]: `user${b.done + i}@example.com` } })));
+      next(k);
+      break;
+    }
+    case 1:
+    case 2: {
+      const [tid, key, nameField, linkField] = b.stage === 1 ? [b.t.github, "github", b.f.login, b.f.ghEmail] as const : [b.t.google, "google", b.f.account, b.f.ggEmail] as const;
+      const emails = ids(b.t.emails);
+      const k = n(key);
+      // Emails are created in order, so the address of the n-th email id is user<n>@example.com.
+      const asText = key === "github" && !!b.f.emailCopy;
+      const index = asText ? new Map(emails.map((id, i) => [id, i])) : undefined;
+      add(tid, Array.from({ length: k }, (_, i) => {
+        const e = pick(r, emails);
+        return { cells: { [nameField]: `${key}-${b.done + i}`, [linkField]: asText ? `user${index!.get(e)}@example.com` : [e] } };
+      }));
+      next(k);
+      break;
+    }
+    case 3: {
+      // Recovery emails: a sample of 30% of emails, each pointing at a random email (loops allowed).
+      const emails = ids(b.t.emails);
+      const k = Math.min(PATH_CHUNK, Math.floor(PATH_SIZES.emails * 0.3) - b.done);
+      const updates = Array.from({ length: k }, (_, i) => ({ id: emails[(b.done + i) * 3 % emails.length], cells: { [b.f.recovery]: [pick(r, emails)] } }));
+      for (let i = 0; i < updates.length; i += 2000) store.updateRows(ACTOR, b.t.emails, updates.slice(i, i + 2000), { noTriggers: true });
+      next(k);
+      break;
+    }
+    case 4: {
+      const emails = ids(b.t.emails), github = ids(b.t.github), google = ids(b.t.google);
+      const choices = store.field(b.f.platform).options.choices!.map(c => c.id);
+      const k = n("accounts");
+      add(b.t.accounts, Array.from({ length: k }, (_, i) => {
+        const x = r();
+        const via = x < 0.4 ? { [b.f.accGithub]: [pick(r, github)] } : x < 0.7 ? { [b.f.accGoogle]: [pick(r, google)] } : { [b.f.accEmail]: [pick(r, emails)] };
+        return { cells: { [b.f.handle]: `acct-${b.done + i}`, [b.f.platform]: pick(r, choices), ...via } };
+      }));
+      next(k);
+      break;
+    }
+    case 5: {
+      const p0 = store.field(b.f.platform).options.choices![0].id;
+      b.f.used = store.createField(b.t.emails, { name: "p0 accounts", type: "pathLookup", options: { targetTableId: b.t.accounts, pathDirection: "dependents", targetFilter: { conjunction: "and", conditions: [{ fieldId: b.f.platform, op: "eq", value: p0 }] } } }).fieldId;
+      b.stage++;
+      break;
+    }
+  }
+  store.setMeta("pathbench", JSON.stringify(b));
+  const count = (tid: string) => store.rowCount(tid);
+  return { stage: b.stage, finished: b.stage > 5, emails: count(b.t.emails), github: count(b.t.github), google: count(b.t.google), accounts: count(b.t.accounts) };
+}
+
+function pathOp(store: BaseStore, name: string, i: number): unknown {
+  const b = pathIds(store);
+  const unused = () => store.query(b.t.emails, { filters: { conjunction: "and", conditions: [{ fieldId: b.f.used, op: "empty" }] }, limit: 100 }).total;
+  switch (name) {
+    case "path_filter_cold":
+      store.clearAggCache();
+      return unused();
+    case "path_filter_warm":
+      unused();
+      return unused();
+    case "path_page": {
+      // A grid page: 100 email rows with their path lookup cells.
+      const all = store.query(b.t.emails, { limit: 0 }).ids;
+      const start = (i * 100) % (all.length - 100);
+      return store.getRows(b.t.emails, all.slice(start, start + 100)).filter(r => r.cells[b.f.used]).length;
+    }
+    case "path_after_link": {
+      // One new account on p0 signed up with some email, then the filter again (the write empties the cache).
+      const emails = store.query(b.t.emails, { limit: 0 }).ids;
+      const p0 = store.field(b.f.platform).options.choices![0].id;
+      store.createRows(ACTOR, b.t.accounts, [{ cells: { [b.f.handle]: "bench-new-" + i, [b.f.platform]: p0, [b.f.accEmail]: [emails[(i * 7919) % emails.length]] } }], { noTriggers: true, noLimit: true });
+      return unused();
+    }
+    case "path_match_write":
+    case "path_match_write_plain": {
+      // 1,000 GitHub accounts with an email as text, in the matching field or in the plain copy (match bases only).
+      const field = name === "path_match_write" ? b.f.ghEmail : b.f.emailCopy;
+      if (!field) throw new Error("Seed with match=1 first");
+      return store.createRows(ACTOR, b.t.github, Array.from({ length: 1000 }, (_, k) => ({ cells: { [field]: `new${i}-${k}@example.com` } })), { noTriggers: true, noLimit: true }).created!.length;
+    }
+  }
+  throw new Error("unknown op " + name);
+}
+
 export interface BenchAutomations {
   repo: AutomationRepo;
   engine: AutomationEngine;
@@ -199,6 +352,8 @@ export async function benchCommand(store: BaseStore, cmd: string, args: Record<s
       return seed(store, args.n, args.offset, args.nprojects);
     case "finalize":
       return finalize(store);
+    case "paths_seed":
+      return pathSeed(store, !!args.match);
     case "stats":
       return stats(store);
     case "auto_on":
@@ -220,6 +375,7 @@ export async function benchCommand(store: BaseStore, cmd: string, args: Record<s
 
 function op(store: BaseStore, name: string, i: number, auto?: BenchAutomations): unknown {
   if (name === "noop") return 0;
+  if (name.startsWith("path_")) return pathOp(store, name, i);
   const b = ids(store);
   const f = b.f;
   const done = store.field(f.Status).options.choices!.find(c => c.name === "Done")!.id;
@@ -363,5 +519,5 @@ benchRoutes.get("/:cmd", async c => {
     }
     return c.json({ name, reps, trials, noop_ms: noop, op_ms: opMs, out, colo: (c.req.raw as { cf?: { colo?: string } }).cf?.colo });
   }
-  return c.json(await stub.bench(c.req.param("cmd"), { n: num("n", 5000), offset: num("offset", 0), nprojects: num("nprojects", 2000) }));
+  return c.json(await stub.bench(c.req.param("cmd"), { n: num("n", 5000), offset: num("offset", 0), nprojects: num("nprojects", 2000), match: num("match", 0) }));
 });

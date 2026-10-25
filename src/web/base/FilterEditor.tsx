@@ -3,7 +3,7 @@ import type { Condition, Field, FilterOp, FilterSpec } from "../../shared/types"
 import { Button, Icon } from "../ui";
 import { Chip } from "./editors";
 
-export type Kind = "text" | "number" | "date" | "bool" | "select" | "multi" | "link";
+export type Kind = "text" | "number" | "date" | "bool" | "select" | "multi" | "link" | "path";
 
 export function kindOf(f: Field): Kind {
   switch (f.type) {
@@ -26,6 +26,8 @@ export function kindOf(f: Field): Kind {
       return "link";
     case "user":
       return f.options.multiple ? "link" : "text";
+    case "pathLookup":
+      return "path";
     case "formula":
     case "rollup":
       return f.options.resultType === "number" ? "number" : f.options.resultType === "date" ? "date" : f.options.resultType === "boolean" ? "bool" : f.options.resultType === "array" ? "link" : "text";
@@ -42,6 +44,8 @@ export const OPS: Record<Kind, [FilterOp, string][]> = {
   select: [["eq", "is"], ["neq", "is not"], ["anyOf", "is any of"], ["noneOf", "is none of"], ["empty", "is empty"], ["notempty", "is not empty"]],
   multi: [["anyOf", "has any of"], ["allOf", "has all of"], ["noneOf", "has none of"], ["empty", "is empty"], ["notempty", "is not empty"]],
   link: [["contains", "contains"], ["ncontains", "does not contain"], ["empty", "is empty"], ["notempty", "is not empty"]],
+  // Path lookups are computed on read; only whether a record has any is answered by the database.
+  path: [["empty", "is empty"], ["notempty", "is not empty"]],
 };
 
 export function FilterEditor({ fields, spec, onChange, emptyText }: { fields: Field[]; spec: FilterSpec; onChange: (next: FilterSpec, delay?: number) => void; emptyText: string }) {

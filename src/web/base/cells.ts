@@ -37,6 +37,7 @@ export const HEADER_ICONS: Record<FieldType, string> = {
   user: GridColumnIcon.HeaderEmoji,
   autonumber: GridColumnIcon.HeaderRowID,
   button: GridColumnIcon.HeaderString,
+  pathLookup: GridColumnIcon.HeaderLookup,
 };
 
 export const DEFAULT_WIDTH: Partial<Record<FieldType, number>> = { checkbox: 90, number: 120, date: 140, longText: 260, autonumber: 90 };
@@ -58,6 +59,7 @@ function chips(f: Field, v: unknown, members: Member[]): { text: string; color: 
     case "multiSelect":
       return (v as string[]).map(id => f.options.choices?.find(x => x.id === id)).filter(Boolean).map(c => ({ text: c!.name, color: c!.color }));
     case "link":
+    case "pathLookup":
       return (v as LinkValue[]).map(x => ({ text: x.t || "Unnamed record", color: "#e3ecfb" }));
     case "user":
       return (Array.isArray(v) ? v : [v]).map(id => ({ text: members.find(m => m.id === id)?.name ?? "Unknown", color: "#efe6fb" }));
@@ -68,7 +70,20 @@ function chips(f: Field, v: unknown, members: Member[]): { text: string; color: 
   }
 }
 
+/** What a value set to match another table says when no record there has it. */
+export function matchMissText(client: { table(id: string): { name: string } | undefined }, target: Field): string {
+  return `No ${client.table(target.tableId)?.name ?? "other"} record has this ${target.name}`;
+}
+
+/** Text of values that match a record of another table, which a click on it opens. */
+export const MATCH_TEXT = "#a8370f";
+
 export function toGridCell(f: Field, r: Row | undefined, writable: boolean, members: Member[], wrap: boolean, busy = false): GridCell {
+  const cell = baseGridCell(f, r, writable, members, wrap, busy);
+  return r?.matches?.[f.id]?.length ? ({ ...cell, themeOverride: { textDark: MATCH_TEXT }, cursor: "pointer" } as GridCell) : cell;
+}
+
+function baseGridCell(f: Field, r: Row | undefined, writable: boolean, members: Member[], wrap: boolean, busy: boolean): GridCell {
   if (!r) return { kind: GridCellKind.Loading, allowOverlay: false };
   const v = rawValue(f, r);
   const ro = !writable || COMPUTED_TYPES.has(f.type);
@@ -98,6 +113,12 @@ export function toGridCell(f: Field, r: Row | undefined, writable: boolean, memb
       return chipsCell(f, v, members, text);
     case "lookup":
       return chipsCell(f, v, members, text);
+    case "pathLookup": {
+      const cell = chipsCell(f, v, members, text);
+      const more = pathMore(r, f.id, v);
+      if (more) cell.data.chips.push({ text: more, color: "#fdecc8" });
+      return cell;
+    }
     case "formula":
     case "rollup":
       if (Array.isArray(v)) return chipsCell(f, v, members, text);
@@ -109,6 +130,15 @@ export function toGridCell(f: Field, r: Row | undefined, writable: boolean, memb
     default:
       return { kind: GridCellKind.Text, data: text, displayData: text, allowOverlay: false, readonly: true, copyData: text };
   }
+}
+
+/** The note after a path lookup cell's records: how many more there are, or that a limit cut the search short. */
+export function pathMore(r: Row, fieldId: string, v: unknown): string | null {
+  const info = r.paths?.[fieldId];
+  if (!info) return null;
+  if (info.incomplete) return "Incomplete";
+  const shown = Array.isArray(v) ? v.length : 0;
+  return info.total > shown ? `+${(info.total - shown).toLocaleString()} more` : null;
 }
 
 function chipsCell(f: Field, v: unknown, members: Member[], text: string): ChipsCell {

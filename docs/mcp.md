@@ -49,7 +49,7 @@ Tables, fields, views and select options are addressed by name (case-insensitive
 | `create_table` | New table with any field types, including links, lookups, rollups and formulas in one call | |
 | `update_table` | Rename, change the primary field | |
 | `delete_table` | Delete a table and the links that point at it | yes |
-| `create_field` | Add a field | |
+| `create_field` | Add a field; a `pathLookup` takes `targetTable`, `direction`, `targetFilter`, `excludeLinks` and `maxDepth`, a `link` takes `dependsOn` and `pathRole`, and a text, email, URL or phone field takes `match: { table, field, dependsOn?, pathRole? }` to match another table's field by value (`null` on `update_field` removes it) | |
 | `update_field` | Rename, change type, options or description; rename a select option with `{ "name": "New", "renameFrom": "Old" }` | yes (options left out of a select list are cleared from cells) |
 | `delete_field` | Delete a field and its values | yes |
 | `create_view` | Grid, kanban, calendar, timeline, gallery or form view with filter, sort, hidden fields, grouping (up to 3 levels in grids), date fields, lanes and card cover | |
@@ -112,7 +112,7 @@ Writes use `typecast` by default: unknown select options are created and linked 
 - `query_records`: 50 records per call by default, at most 200; use `nextOffset` to page.
 - `get_records`: 1 to 100 ids.
 - `create_records`, `update_records`, `delete_records`: 1 to 200 records per call.
-- Filters: each operator is checked against the field type (for example `contains` is rejected on a single select; use `anyOf`), value lists hold at most 50 items, and link fields filter by record id or by name with `contains`.
+- Filters: each operator is checked against the field type (for example `contains` is rejected on a single select; use `anyOf`), value lists hold at most 50 items, and link fields filter by record id or by name with `contains`. Path lookup fields take only `empty` and `notempty`, and cannot be sorted or grouped.
 - `aggregate`: up to 2 group fields, 1 to 10 metrics, at most 1,000 groups (the result says `truncated` when there were more).
 - Dashboards: at most 30 widgets each.
 - Automations: at most 50 per base and 25 steps each.

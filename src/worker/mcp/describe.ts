@@ -2,6 +2,8 @@
 import type { Field, Schema, Table, View, ViewType } from "../../shared/types";
 import { toDisplay } from "../../shared/formula";
 import { promptToDisplay } from "../../shared/ai";
+import { matchProblem } from "../../shared/matches";
+import { allowedEdges, linkDependsOn, pathFieldProblem } from "../../shared/paths";
 import { fieldsOf } from "../records";
 
 export interface FieldInfo {
@@ -41,7 +43,31 @@ export function describeField(schema: Schema, f: Field): FieldInfo {
     case "link":
       options.linkedTable = schema.tables.find(t => t.id === o.linkedTableId)?.name;
       options.inverseField = fieldName(o.inverseFieldId);
+      options.dependsOn = linkDependsOn(f);
+      if (o.pathRole === "none") options.pathRole = "none";
       break;
+    case "pathLookup": {
+      const tableName = (id?: string) => schema.tables.find(t => t.id === id)?.name;
+      const qualified = (id: string) => {
+        const x = schema.fields.find(ff => ff.id === id);
+        return x ? `${tableName(x.tableId)}.${x.name}` : id;
+      };
+      options.targetTable = tableName(o.targetTableId);
+      options.direction = o.pathDirection ?? "dependents";
+      if (o.targetFilter?.conditions.length) options.targetFilter = { conjunction: o.targetFilter.conjunction, conditions: o.targetFilter.conditions.map(c => ({ field: fieldName(c.fieldId) ?? c.fieldId, op: c.op, value: c.value })) };
+      // The links in use now; links added later on a path to the target join automatically.
+      if (o.targetTableId) {
+        options.links = allowedEdges(schema.fields, f.tableId, o.targetTableId, o.pathDirection ?? "dependents", o.excludeLinkFieldIds).map(e => {
+          const x = schema.fields.find(ff => ff.id === e.fieldId);
+          return e.keys && x?.options.match ? `${qualified(e.fieldId)} = ${qualified(x.options.match.fieldId)}` : qualified(e.fieldId);
+        });
+      }
+      if (o.excludeLinkFieldIds?.length) options.excludeLinks = o.excludeLinkFieldIds.map(qualified);
+      if (o.maxDepth) options.maxDepth = o.maxDepth;
+      const problem = pathFieldProblem(f, schema.fields, new Set(schema.tables.map(t => t.id)));
+      if (problem) options.broken = problem;
+      break;
+    }
     case "lookup":
     case "rollup":
       options.linkField = fieldName(o.linkFieldId);
@@ -57,6 +83,14 @@ export function describeField(schema: Schema, f: Field): FieldInfo {
     case "user":
       options.multiple = !!o.multiple;
       break;
+  }
+  if (o.match) {
+    const target = schema.fields.find(x => x.id === o.match!.fieldId);
+    options.match = target ? `${schema.tables.find(t => t.id === target.tableId)?.name}.${target.name}` : o.match.fieldId;
+    if (o.match.dependsOn === false) options.matchDependsOn = false;
+    if (o.match.pathRole === "none") options.matchPathRole = "none";
+    const problem = matchProblem(f, schema.fields);
+    if (problem) options.matchBroken = problem;
   }
   if (o.ai) {
     const ai = o.ai;

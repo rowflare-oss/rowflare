@@ -16,10 +16,11 @@ export const FN_LABELS: Record<AggFn, string> = {
   max: "Maximum",
 };
 
-export const groupable = (f: Field) => f.type !== "attachment" && f.type !== "longText";
+export const groupable = (f: Field) => f.type !== "attachment" && f.type !== "longText" && f.type !== "pathLookup";
 
 export function fieldsForFn(fn: AggFn, fields: Field[]): Field[] {
   if (fn === "count") return [];
+  fields = fields.filter(f => f.type !== "pathLookup");
   if (fn === "sum" || fn === "avg") return fields.filter(isNumberField);
   if (fn === "min" || fn === "max") return fields.filter(f => isNumberField(f) || isDateField(f));
   return fields;

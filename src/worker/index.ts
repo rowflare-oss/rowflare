@@ -461,6 +461,12 @@ app.post("/api/bases/:base/rows/get", async c => {
   return c.json(unwrap(await a.stub.rows(b.tableId, b.ids)));
 });
 
+app.post("/api/bases/:base/paths/explain", async c => {
+  const a = await baseAccess(c, c.req.param("base"), "read");
+  const b = await body<{ fieldId: string; rowId: number; targetId: number }>(c);
+  return c.json({ path: unwrap(await a.stub.explainPath(String(b.fieldId), Number(b.rowId), Number(b.targetId))) });
+});
+
 app.post("/api/bases/:base/rows", async c => {
   const a = await baseAccess(c, c.req.param("base"), "write");
   const b = await body<RowOp & { clientId?: string }>(c);

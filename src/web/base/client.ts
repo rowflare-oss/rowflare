@@ -212,6 +212,11 @@ export class BaseClient {
       tableId: view.tableId,
       viewId,
       search,
+      // The settings as this client has them: an edit is saved a moment later, so the stored view may still be the old one.
+      filters: view.config.filters ?? { conjunction: "and", conditions: [] },
+      sorts: view.config.sorts ?? [],
+      groupLevels: view.type === "grid" ? view.config.groups ?? [] : undefined,
+      groupFieldId: view.type === "kanban" ? view.config.groupFieldId : undefined,
       limit: dated ? 2000 : view.type === "kanban" ? 600 : 150,
       dayOffset: grouped ? -new Date().getTimezoneOffset() : undefined,
       range: dated ? { startFieldId: view.config.dateFieldId, endFieldId: view.config.endDateFieldId, durationFieldId: view.type === "timeline" ? view.config.durationFieldId : undefined, ...range } : undefined,
@@ -328,6 +333,24 @@ export class BaseClient {
     }
   }
 
+  /**
+   * Fetches the cached rows of a table again and swaps them in, so an open record or a typed draft stays mounted.
+   * Returns false when too many are cached; the caller then drops the cache instead.
+   */
+  private refreshRows(tableId: string): boolean {
+    const ids = [...this.cache(tableId).keys()];
+    if (ids.length > 1000) return false;
+    for (let i = 0; i < ids.length; i += FETCH_CHUNK) {
+      post<Row[]>(`/api/bases/${this.baseId}/rows/get`, { tableId, ids: ids.slice(i, i + FETCH_CHUNK) })
+        .then(rows => {
+          this.putRows(tableId, rows);
+          this.emit();
+        })
+        .catch(() => undefined);
+    }
+    return true;
+  }
+
   /** Fetches rows that are not cached yet; safe to call on every scroll. */
   ensureRows(tableId: string, ids: number[]) {
     const m = this.cache(tableId);
@@ -390,6 +413,11 @@ export class BaseClient {
 
   aggregateRecords(tableId: string, input: AggregateInput, key: GroupKey[]): Promise<{ ids: number[]; truncated: boolean }> {
     return post(`/api/bases/${this.baseId}/aggregate/records`, { tz: localZone(), ...input, tableId, key });
+  }
+
+  /** One chain of linked records from a record to one of its path lookup results, start first; null when there is none. */
+  async explainPath(fieldId: string, rowId: number, targetId: number): Promise<{ tableId: string; id: number; t: string; fieldId?: string }[] | null> {
+    return (await post<{ path: { tableId: string; id: number; t: string; fieldId?: string }[] | null }>(`/api/bases/${this.baseId}/paths/explain`, { fieldId, rowId, targetId })).path;
   }
 
   private removeIds(tableId: string, ids: number[]) {
@@ -769,6 +797,11 @@ export class BaseClient {
         this.dataChanged(msg.tableId);
         return;
       case "reload":
+        if (msg.keep && this.refreshRows(msg.tableId)) {
+          this.scheduleRequery(msg.tableId, 100);
+          this.dataChanged(msg.tableId);
+          return;
+        }
         this.rows.delete(msg.tableId);
         this.touchRows(msg.tableId);
         this.scheduleRequery(msg.tableId, 100);

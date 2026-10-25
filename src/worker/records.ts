@@ -1,6 +1,6 @@
 // Record shape and name resolution shared by the REST API and the MCP server.
 import { failure, type LimitInfo } from "./hosting";
-import type { Attachment, Field, LinkValue, Member, Row, Schema, Table } from "../shared/types";
+import type { Attachment, Field, LinkValue, Member, PathCellInfo, Row, Schema, Table } from "../shared/types";
 import { COMPUTED_TYPES } from "../shared/types";
 import { compileFormula, evaluate, FormulaError, truthy } from "../shared/formula";
 import { formulaValue } from "../shared/cells";
@@ -11,6 +11,10 @@ export interface ApiRecord {
   id: number;
   createdTime: string;
   fields: Record<string, unknown>;
+  /** Path lookup cells that list only part of their records: the full count, and whether a limit cut the search short. */
+  paths?: Record<string, PathCellInfo>;
+  /** For fields set to match another table: ids of the records with the same value (at most 100). */
+  matches?: Record<string, number[]>;
 }
 
 export interface TableCtx {
@@ -53,6 +57,7 @@ export function outValue(f: Field, row: Row, members: Map<string, Member>, origi
     case "multiSelect":
       return (v as string[]).map(id => f.options.choices?.find(c => c.id === id)?.name).filter(Boolean);
     case "link":
+    case "pathLookup":
       return (v as LinkValue[]).map(x => x.id);
     case "attachment":
       return (v as Attachment[]).map(a => ({ id: a.id, filename: a.name, size: a.size, type: a.type, url: `${origin}/api/files/${a.key.split("/").map(encodeURIComponent).join("/")}` }));
@@ -75,7 +80,14 @@ export function toRecord(row: Row, fields: Field[], members: Map<string, Member>
     const v = outValue(f, row, members, origin);
     if (v !== undefined) out[byId ? f.id : f.name] = v;
   }
-  return { id: row.id, createdTime: new Date(row.createdAt).toISOString(), fields: out };
+  const rec: ApiRecord = { id: row.id, createdTime: new Date(row.createdAt).toISOString(), fields: out };
+  for (const f of fields) {
+    const info = row.paths?.[f.id];
+    if (info && !(only && !only.has(f.id))) (rec.paths ??= {})[byId ? f.id : f.name] = info;
+    const m = row.matches?.[f.id];
+    if (m && !(only && !only.has(f.id))) (rec.matches ??= {})[byId ? f.id : f.name] = m.map(x => x.id);
+  }
+  return rec;
 }
 
 export function inCells(fields: Field[], input: Record<string, unknown> | undefined, replace = false): Record<string, unknown> {
@@ -113,7 +125,8 @@ export async function loadTable(c: AppContext, baseId: string, tableKey: string,
 export async function filterIdsByFormula(t: TableCtx, ids: number[], formula: string): Promise<number[]> {
   let compiled;
   try {
-    compiled = compileFormula(formula, t.fields.map(f => ({ id: f.id, name: f.name })));
+    // Path lookup cells hold at most 100 records and may be incomplete, so a formula over them could call used records unused.
+    compiled = compileFormula(formula, t.fields.filter(f => f.type !== "pathLookup").map(f => ({ id: f.id, name: f.name })));
   } catch (e) {
     throw new HttpError(422, e instanceof FormulaError ? `Invalid filterByFormula: ${e.message}` : "Invalid filterByFormula");
   }

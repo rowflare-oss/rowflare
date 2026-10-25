@@ -2,6 +2,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Schema, ViewType } from "../../shared/types";
+import { MATCH_TYPES } from "../../shared/matches";
 import { baseAccess, HttpError, type AppContext, type BaseAccess } from "../access";
 import type { SchemaOp } from "../base-do";
 import { fieldOf, loadTable, unwrap } from "../records";
@@ -15,6 +16,9 @@ import type { AiServiceInfo } from "../../shared/ai";
 /** Lookup and rollup settings on other types would be dropped silently (or fail on a table that does not exist yet). */
 function checkSpec(type: FieldSpec["type"], o: FieldSpecOptions | undefined) {
   if ((o?.linkField || o?.targetField) && type !== "lookup" && type !== "rollup") throw new HttpError(422, `linkField and targetField only apply to lookup and rollup fields, not ${type}`);
+  if (o?.targetTable && type !== "pathLookup") throw new HttpError(422, `targetTable only applies to pathLookup fields, not ${type}`);
+  if ((o?.dependsOn !== undefined || o?.pathRole) && type !== "link") throw new HttpError(422, `dependsOn and pathRole only apply to link fields, not ${type}`);
+  if (o?.match && !MATCH_TYPES.has(type)) throw new HttpError(422, `match only applies to text, email, url and phone fields, not ${type}`);
 }
 
 /** Fields that refer to other fields, so create_table adds them after the plain ones. */
@@ -92,7 +96,11 @@ export function registerSchemaTools(server: McpServer, c: AppContext) {
 
   server.registerTool(
     "create_field",
-    { title: "Create field", description: "Add a field to a table. Formulas use field names in braces.", inputSchema: { baseId: z.string(), table, field: fieldSpecSchema }, annotations: WRITE },
+    {
+      title: "Create field",
+      description:
+        "Add a field to a table. Formulas use field names in braces. A pathLookup field collects the records of targetTable that this record reaches through any chain of links, to any depth, following each link's dependsOn direction; filter it with empty to find records with no such chain (for example emails never used on a platform).",
+      inputSchema: { baseId: z.string(), table, field: fieldSpecSchema }, annotations: WRITE },
     guard(async (args: { baseId: string; table: string; field: FieldSpec }) => {
       const t = await loadTable(c, args.baseId, args.table, "write");
       const s = args.field;

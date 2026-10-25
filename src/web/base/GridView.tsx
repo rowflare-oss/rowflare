@@ -18,15 +18,17 @@ import {
 import "@glideapps/glide-data-grid/dist/index.css";
 import type { Cells, Field, SummaryFn, View } from "../../shared/types";
 import { aiFieldProblem, type AiProgress, type AiServiceInfo } from "../../shared/ai";
+import { pathFieldProblem } from "../../shared/paths";
 import { listBaseServices } from "../ai/api";
 import { COMPUTED_TYPES } from "../../shared/types";
 import { BaseClient, useBase } from "./client";
-import { buttonRenderer, chipsRenderer, DEFAULT_WIDTH, groupHeaderRenderer, HEADER_ICONS, POPOVER_TYPES, rawValue, toGridCell, valueFromCell, type GroupHeaderCell } from "./cells";
+import { buttonRenderer, chipsRenderer, DEFAULT_WIDTH, groupHeaderRenderer, HEADER_ICONS, matchMissText, POPOVER_TYPES, rawValue, toGridCell, valueFromCell, type GroupHeaderCell } from "./cells";
 import { runButtonField } from "../auto/button";
 import { AI_HEADER_ICONS, aiCell, aiRenderer } from "../ai/aiCell";
 import { buildRows, existingPaths, groupCells, headerLabel, summaryOptions, summaryText, SUMMARY_LABELS, type HeaderRow } from "./gridGroups";
 import { FieldValueEditor } from "./editors";
 import { Icon, Menu, Popover, type MenuItem } from "../ui";
+import { matchProblem } from "../../shared/matches";
 import { toast, toastError } from "../toast";
 import { post } from "../api";
 
@@ -55,6 +57,16 @@ const theme: Partial<Theme> = {
   cellHorizontalPadding: 10,
 };
 
+let measure: CanvasRenderingContext2D | null | undefined;
+
+/** Width of a cell's text in the grid font, to tell a click on the text from one beside it. */
+function textWidth(text: string): number {
+  if (measure === undefined) measure = document.createElement("canvas").getContext("2d");
+  if (!measure) return Infinity;
+  measure.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+  return measure.measureText(text).width;
+}
+
 function loadCollapsed(viewId: string): Set<string> {
   try {
     return new Set(JSON.parse(localStorage.getItem("rf-collapsed:" + viewId) ?? "[]") as string[]);
@@ -74,6 +86,8 @@ function saveCollapsed(viewId: string, s: Set<string>) {
 
 export interface GridHandlers {
   onExpand: (rowId: number) => void;
+  /** Opens a record of any table on top, as a record opened from another record. */
+  onOpenRecord: (tableId: string, id: number) => void;
   onEditField: (fieldId: string, anchor: DOMRect) => void;
   onInsertField: (anchor: DOMRect, position: { afterFieldId?: string; beforeFieldId?: string }) => void;
 }
@@ -144,18 +158,20 @@ export default function GridView({ client, view, search, handlers }: { client: B
     return null;
   };
 
+  const pathProblem = (f: Field): string | null => (f.type === "pathLookup" ? pathFieldProblem(f, client.schema.fields, new Set(client.schema.tables.map(t => t.id))) : null);
+
   const columns: GridColumn[] = useMemo(
     () =>
       fields.map(f => ({
         id: f.id,
-        title: aiTitle(f, client.aiProgress.get(f.id), aiProblem(f)),
+        title: f.type === "pathLookup" && pathProblem(f) ? `${f.name} (broken)` : aiTitle(f, client.aiProgress.get(f.id), aiProblem(f)),
         width: view.config.widths?.[f.id] ?? DEFAULT_WIDTH[f.type] ?? 180,
         icon: f.options.ai ? "ai" : HEADER_ICONS[f.type],
         hasMenu: true,
         themeOverride: COMPUTED_TYPES.has(f.type) ? { bgCell: "#fcfbfa" } : undefined,
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(fields.map(f => [f.id, f.name, f.type, f.options.ai ?? null])), JSON.stringify(view.config.widths ?? {}), JSON.stringify([...client.aiProgress.values()]), aiServices],
+    [JSON.stringify(fields.map(f => [f.id, f.name, f.type, f.options.ai ?? null])), JSON.stringify(view.config.widths ?? {}), JSON.stringify([...client.aiProgress.values()]), aiServices, client.schema.version],
   );
 
   const headerCell = useCallback(
@@ -216,16 +232,24 @@ export default function GridView({ client, view, search, handlers }: { client: B
   );
 
   const onCellClicked = useCallback(
-    ([col, row]: Item) => {
+    ([col, row]: Item, args?: { localEventX: number; bounds: Rectangle }) => {
       const h = display?.[row];
       if (h?.kind === "header") return toggleGroup(h.path);
       const f = fields[col];
       const id = rowIds[row];
       if (f?.type === "button" && id !== undefined) runButtonField(client, f, id);
+      // A click on a matched value opens its record; a click beside it only selects the cell.
+      const rec = f?.options.match && id !== undefined ? client.row(tableId, id) : undefined;
+      const list = rec?.matches?.[f!.id];
+      const target = list?.length ? client.schema.fields.find(x => x.id === f!.options.match!.fieldId) : undefined;
+      if (target && args && args.localEventX <= theme.cellHorizontalPadding! + textWidth(String(rec!.cells[f!.id] ?? ""))) {
+        if (list!.length === 1) handlers.onOpenRecord(target.tableId, list![0].id);
+        else setMenu({ anchor: new DOMRect(args.bounds.x, args.bounds.y, args.bounds.width, args.bounds.height), items: list!.map(v => ({ label: v.t || "Unnamed record", icon: "expand", onClick: () => handlers.onOpenRecord(target.tableId, v.id) })) });
+      }
       const st = f?.options.ai && id !== undefined ? client.row(tableId, id)?.ai?.[f.id] : undefined;
       if (st?.s === "error" && st.e) toast(st.e, "error");
     },
-    [display, toggleGroup, fields, rowIds, client, tableId],
+    [display, toggleGroup, fields, rowIds, client, tableId, handlers],
   );
 
   /** Copy skips group header rows. */
@@ -419,8 +443,12 @@ export default function GridView({ client, view, search, handlers }: { client: B
           { label: "Insert left", icon: "plus", disabled: !writable || primary, onClick: () => handlers.onInsertField(anchor, { beforeFieldId: f.id }) },
           { label: "Insert right", icon: "plus", disabled: !writable, onClick: () => handlers.onInsertField(anchor, { afterFieldId: f.id }) },
           "sep",
-          { label: "Sort first to last", icon: "sort", onClick: () => client.updateViewConfig(view.id, { sorts: [{ fieldId: f.id, dir: "asc" }, ...sorts.filter(s => s.fieldId !== f.id)] }) },
-          { label: "Sort last to first", icon: "sort", onClick: () => client.updateViewConfig(view.id, { sorts: [{ fieldId: f.id, dir: "desc" }, ...sorts.filter(s => s.fieldId !== f.id)] }) },
+          ...(f.type === "pathLookup"
+            ? (pathProblem(f) ? [{ label: `${pathProblem(f)}. Its cells stay empty.`, icon: "x", disabled: true, onClick: () => undefined } as MenuItem] : [])
+            : [
+                { label: "Sort first to last", icon: "sort", onClick: () => client.updateViewConfig(view.id, { sorts: [{ fieldId: f.id, dir: "asc" }, ...sorts.filter(s => s.fieldId !== f.id)] }) },
+                { label: "Sort last to first", icon: "sort", onClick: () => client.updateViewConfig(view.id, { sorts: [{ fieldId: f.id, dir: "desc" }, ...sorts.filter(s => s.fieldId !== f.id)] }) },
+              ]),
           {
             label: "Filter by this field",
             icon: "filter",
@@ -589,13 +617,28 @@ export default function GridView({ client, view, search, handlers }: { client: B
     client.createRows(tableId, [{}]);
   }, [client, tableId, writable]);
 
+  /** For a value that should match a record of another table but does not, says so on hover. */
+  const matchHint = useCallback(
+    ([col, row]: Item): string => {
+      const f = fields[col];
+      const id = rowIds[row];
+      if (!f?.options.match || id === undefined || display?.[row]?.kind === "header") return "";
+      const rec = client.row(tableId, id);
+      const target = client.schema.fields.find(x => x.id === f.options.match!.fieldId);
+      if (!rec || !target || !rec.cells[f.id] || rec.matches?.[f.id]?.length || matchProblem(f, client.schema.fields)) return "";
+      return matchMissText(client, target);
+    },
+    [fields, rowIds, display, client, tableId],
+  );
+
   const onItemHovered = useCallback(
     (args: { kind: string; location: Item }) => {
+      if (wrap.current) wrap.current.title = args.kind === "cell" ? matchHint(args.location) : "";
       if (args.kind !== "cell" || args.location[1] < 0) return setHoverRow(null);
       const b = ref.current?.getBounds(0, args.location[1]);
       if (b) setHoverRow({ row: args.location[1], rect: b });
     },
-    [],
+    [matchHint],
   );
 
   const wrapRect = wrap.current?.getBoundingClientRect();

@@ -11,7 +11,7 @@ export const filterSchema = z
         z.object({
           field: z.string().describe("Field name or id"),
           op: z.enum(FILTER_OPS),
-          value: z.unknown().optional().describe("Option names for select fields, record ids for links, YYYY-MM-DD for dates; omit for empty/notempty"),
+          value: z.unknown().optional().describe("Option names for select fields, record ids for links, YYYY-MM-DD for dates; omit for empty/notempty. pathLookup fields take only empty/notempty"),
         }),
       )
       .max(20),
@@ -25,7 +25,7 @@ export const fieldsSchema = z.array(z.string()).max(100).describe("Only return t
 export type FilterInput = z.infer<typeof filterSchema>;
 export type SortInput = z.infer<typeof sortSchema>;
 
-export const FIELD_TYPES_ENUM = ["text", "longText", "email", "url", "phone", "number", "singleSelect", "multiSelect", "date", "checkbox", "attachment", "link", "lookup", "rollup", "formula", "createdTime", "modifiedTime", "user", "autonumber"] as const;
+export const FIELD_TYPES_ENUM = ["text", "longText", "email", "url", "phone", "number", "singleSelect", "multiSelect", "date", "checkbox", "attachment", "link", "lookup", "rollup", "formula", "createdTime", "modifiedTime", "user", "autonumber", "pathLookup"] as const;
 
 export const fieldSpecOptionsSchema = z
   .object({
@@ -38,6 +38,23 @@ export const fieldSpecOptionsSchema = z
     symbol: z.string().max(4).optional(),
     includeTime: z.boolean().optional(),
     linkedTable: z.string().optional().describe("link: table name or id to link to"),
+    dependsOn: z.boolean().optional().describe("link: records of this table depend on the records they link to (default true for the table the link is created in; the other side gets the opposite). Path lookups follow these directions"),
+    pathRole: z.enum(["dependency", "none"]).optional().describe('link: "none" keeps this link out of every path lookup (for links that are not dependencies, like "referred by")'),
+    match: z
+      .object({
+        table: z.string().describe("Table name or id"),
+        field: z.string().describe("Text, email, URL or phone field of that table"),
+        dependsOn: z.boolean().optional().describe("Records of this table depend on the records they match (default true)"),
+        pathRole: z.enum(["dependency", "none"]).optional().describe('"none" keeps this match out of path lookups'),
+      })
+      .nullable()
+      .optional()
+      .describe("text, email, url, phone: values name records of another table whose field holds the same value (compared without case or surrounding spaces), without a link. Path lookups walk matches like links. null removes it"),
+    targetTable: z.string().optional().describe("pathLookup: table whose records are collected, reached through any chain of links and value matches"),
+    direction: z.enum(["dependents", "dependencies"]).optional().describe('pathLookup: "dependents" collects records that depend on this one directly or through others (an email -> GitHub accounts registered with it -> platform accounts signed in with those); "dependencies" walks the other way. Default dependents'),
+    targetFilter: filterSchema.optional().describe("pathLookup: only target records matching this filter count (fields of the target table)"),
+    excludeLinks: z.array(z.string()).max(50).optional().describe('pathLookup: link fields (or fields set to match) the paths must not use, as "Table.Field" or field ids; every other link on a path to the target, including links added later, is used'),
+    maxDepth: z.number().int().min(1).max(64).optional().describe("pathLookup: most links in one chain; unlimited when missing"),
     linkField: z.string().optional().describe("lookup / rollup: link field in this table"),
     targetField: z.string().optional().describe("lookup / rollup: field in the linked table"),
     fn: z.enum(["sum", "avg", "min", "max", "count", "counta", "countall", "arrayjoin", "arrayunique", "arraycompact", "and", "or", "concat"]).optional().describe("rollup function"),

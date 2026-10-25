@@ -328,6 +328,11 @@ export class BaseDO extends DurableObject<Env> {
     return this.safe(() => this.store.getRows(tableId, ids));
   }
 
+  /** One chain of linked records from a record to one of its path lookup results; null when it is not a result. */
+  explainPath(fieldId: string, rowId: number, targetId: number): Result<{ tableId: string; id: number; t: string; fieldId?: string }[] | null> {
+    return this.safe(() => this.store.explainPath(fieldId, rowId, targetId));
+  }
+
   aggregate(tableId: string, input: AggregateInput): Result<AggregateResult> {
     return this.safe(() => this.store.aggregate(tableId, input));
   }
@@ -831,6 +836,7 @@ export class BaseDO extends DurableObject<Env> {
     const plan = BaseStore.broadcastPlan(result);
     for (const c of plan.rows) if (c.rows.length) this.broadcast({ type: "rows", tableId: c.tableId, rows: c.rows, by: actor?.userId, clientId });
     for (const tableId of plan.reload) this.broadcast({ type: "reload", tableId });
+    for (const tableId of this.store.pathTablesAffected(result)) if (!plan.reload.includes(tableId)) this.broadcast({ type: "reload", tableId, keep: true });
     for (const d of result.deleted) this.broadcast({ type: "deleted", tableId: d.tableId, ids: d.ids, by: actor?.userId, clientId });
     if (result.schema) this.broadcast({ type: "schema", schema: result.schema, clientId });
   }

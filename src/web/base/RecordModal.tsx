@@ -1,16 +1,17 @@
 // Expanded record: every field with its full editor, previous / next navigation and record actions.
-import { useEffect } from "react";
-import type { View } from "../../shared/types";
+import { useEffect, useState } from "react";
+import type { Field, LinkValue, Row, View } from "../../shared/types";
 import { COMPUTED_TYPES } from "../../shared/types";
 import { BaseClient, primaryText, useBase } from "./client";
 import { FieldValueEditor, formatDate } from "./editors";
-import { rawValue } from "./cells";
+import { matchMissText, pathMore, rawValue } from "./cells";
 import { FieldIcon, Icon, Modal, Spinner } from "../ui";
-import { toast } from "../toast";
+import { toast, toastError } from "../toast";
 import { runButtonField } from "../auto/button";
 import { AI_STATE_TEXT } from "../ai/aiCell";
+import { matchProblem } from "../../shared/matches";
 
-export default function RecordModal({ client, view, rowId, onClose, onNavigate }: { client: BaseClient; view: View; rowId: number; onClose: () => void; onNavigate: (id: number) => void }) {
+export default function RecordModal({ client, view, rowId, onClose, onNavigate, onOpenRecord }: { client: BaseClient; view: View; rowId: number; onClose: () => void; onNavigate: (id: number) => void; onOpenRecord?: (tableId: string, id: number) => void }) {
   useBase(client);
   const tableId = view.tableId;
   const row = client.row(tableId, rowId);
@@ -87,15 +88,20 @@ export default function RecordModal({ client, view, rowId, onClose, onNavigate }
                     {client.buttonBusy.has(`${f.id}:${rowId}`) ? "Running..." : f.options.label || "Run"}
                   </button>
                 </div>
+              ) : f.type === "pathLookup" ? (
+                <PathValues client={client} field={f} row={row} onOpen={onOpenRecord} />
               ) : (
-                <FieldValueEditor
-                  field={f}
-                  value={rawValue(f, row)}
-                  readOnly={!client.writable}
-                  compact
-                  ctx={ctx}
-                  onChange={(v, opts) => client.updateCells(tableId, [{ id: rowId, cells: { [f.id]: v } }], { typecast: opts?.typecast })}
-                />
+                <>
+                  <FieldValueEditor
+                    field={f}
+                    value={rawValue(f, row)}
+                    readOnly={!client.writable}
+                    compact
+                    ctx={ctx}
+                    onChange={(v, opts) => client.updateCells(tableId, [{ id: rowId, cells: { [f.id]: v } }], { typecast: opts?.typecast })}
+                  />
+                  {f.options.match && <MatchValues client={client} field={f} row={row} onOpen={onOpenRecord} />}
+                </>
               )}
               {f.options.ai && (
                 <div className="row small ai-record-state">
@@ -112,5 +118,60 @@ export default function RecordModal({ client, view, rowId, onClose, onNavigate }
         </div>
       )}
     </Modal>
+  );
+}
+
+/** Path lookup results as records to open, each with the chain of links that reaches it. */
+function PathValues({ client, field, row, onOpen }: { client: BaseClient; field: Field; row: Row; onOpen?: (tableId: string, id: number) => void }) {
+  const [why, setWhy] = useState<{ id: number; text: string } | null>(null);
+  const list = (row.cells[field.id] as LinkValue[] | undefined) ?? [];
+  const more = pathMore(row, field.id, list);
+  const target = field.options.targetTableId!;
+  const arrow = field.options.pathDirection === "dependencies" ? " → " : " ← ";
+  const explain = async (id: number) => {
+    if (why?.id === id) return setWhy(null);
+    try {
+      const path = await client.explainPath(field.id, row.id, id);
+      const same = (fieldId?: string) => {
+        const f = fieldId ? client.schema.fields.find(x => x.id === fieldId) : undefined;
+        return f && f.type !== "link" ? ` (same ${f.name})` : "";
+      };
+      const text = path ? path.map((h, i) => (i === 0 ? h.t || "Unnamed record" : `${client.table(h.tableId)?.name ?? ""}: ${h.t || "Unnamed record"}${same(h.fieldId)}`)).join(arrow) : "No chain leads there any more.";
+      setWhy({ id, text });
+    } catch (e) {
+      toastError(e);
+    }
+  };
+  if (!list.length) return <span className="muted">{more ?? "-"}</span>;
+  return (
+    <div className="path-values">
+      {list.map(v => (
+        <div key={v.id} className="path-value">
+          <button type="button" className="chip chip-btn" style={{ background: "var(--link-chip)" }} disabled={!onOpen} onClick={() => onOpen?.(target, v.id)} title="Open record">
+            <span className="chip-text">{v.t || "Unnamed record"}</span>
+          </button>
+          <button type="button" className="link-btn small" onClick={() => explain(v.id)}>Why</button>
+          {why?.id === v.id && <div className="muted small path-why">{why.text}</div>}
+        </div>
+      ))}
+      {more && <div className="muted small">{more === "Incomplete" ? "Incomplete: the search hit its limit. Add target conditions or leave links out to see every record." : more}</div>}
+    </div>
+  );
+}
+
+/** The records of another table holding the same value as a field set to match it. */
+function MatchValues({ client, field, row, onOpen }: { client: BaseClient; field: Field; row: Row; onOpen?: (tableId: string, id: number) => void }) {
+  const target = client.schema.fields.find(x => x.id === field.options.match?.fieldId);
+  if (!target || matchProblem(field, client.schema.fields)) return null;
+  const list = row.matches?.[field.id] ?? [];
+  if (!list.length) return row.cells[field.id] ? <div className="muted small">{matchMissText(client, target)}</div> : null;
+  return (
+    <div className="path-values match-values">
+      {list.map(v => (
+        <button key={v.id} type="button" className="chip chip-btn" style={{ background: "var(--link-chip)" }} disabled={!onOpen} onClick={() => onOpen?.(target.tableId, v.id)} title="Open record">
+          <span className="chip-text">{v.t || "Unnamed record"}</span>
+        </button>
+      ))}
+    </div>
   );
 }

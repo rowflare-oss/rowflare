@@ -243,13 +243,17 @@ export function validateAutomation(cfg: AutomationConfig, s: AutomationSchema): 
     return null;
   };
 
+  // Triggers compare a record before and after a write; path lookups are not part of a record, so they cannot.
+  const pathErr = (spec: FilterSpec | undefined, tableId: string): string | null =>
+    spec?.conditions?.some(c => fieldsOf(tableId).get(c?.fieldId)?.type === "pathLookup") ? "Path lookups cannot be used in trigger conditions" : null;
+
   const t = cfg.trigger;
   if (!t || !has(TRIGGER_TYPES, t.type)) return "Unknown trigger type";
   switch (t.type) {
     case "recordCreated":
     case "recordUpdated":
     case "recordMatches": {
-      const e = tableErr(t.tableId) ?? condErr(t.conditions, t.tableId, "the trigger conditions");
+      const e = tableErr(t.tableId) ?? condErr(t.conditions, t.tableId, "the trigger conditions") ?? pathErr(t.conditions, t.tableId);
       if (e) return e;
       if (t.type === "recordMatches" && !t.conditions?.conditions.length) return "Add at least one condition";
       if (t.type === "recordUpdated" && t.fieldIds !== undefined) {
@@ -268,7 +272,7 @@ export function validateAutomation(cfg: AutomationConfig, s: AutomationSchema): 
       if (t.every === "month" && !(Number.isInteger(t.monthday) && t.monthday! >= 1 && t.monthday! <= 31)) return "Choose a day of the month";
       break;
     case "dateReached": {
-      const e = tableErr(t.tableId) ?? condErr(t.conditions, t.tableId, "the trigger conditions");
+      const e = tableErr(t.tableId) ?? condErr(t.conditions, t.tableId, "the trigger conditions") ?? pathErr(t.conditions, t.tableId);
       if (e) return e;
       if (fieldsOf(t.tableId).get(t.fieldId)?.type !== "date") return "Choose a date field";
       if (!Number.isInteger(t.offsetMinutes) || Math.abs(t.offsetMinutes) > 525_600) return "The offset must be within a year";

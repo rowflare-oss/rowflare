@@ -11,6 +11,9 @@ import { Button, FieldIcon, Icon, Popover } from "../ui";
 import { toastError } from "../toast";
 import { isAiOutputType, promptToDisplay, promptToStored } from "../../shared/ai";
 import AiFieldOptions from "../ai/AiFieldOptions";
+import { LinkDependency, PathLookupOptions } from "./PathLookupOptions";
+import { MatchOptions } from "./MatchOptions";
+import { MATCH_TYPES } from "../../shared/matches";
 
 export interface FieldDialogProps {
   client: BaseClient;
@@ -53,7 +56,7 @@ export default function FieldDialog({ client, tableId, field, anchor, viewId, po
   const linkFields = fields.filter(f => f.type === "link" && f.id !== field?.id);
   const linkField = linkFields.find(f => f.id === opts.linkFieldId);
   const targetFields = linkField?.options.linkedTableId ? client.fields(linkField.options.linkedTableId) : [];
-  const disallowed: FieldType[] = isPrimary ? ["link", "attachment", "checkbox", "lookup", "rollup"] : [];
+  const disallowed: FieldType[] = isPrimary ? ["link", "attachment", "checkbox", "lookup", "rollup", "pathLookup"] : [];
 
   const save = async () => {
     const options: FieldOptions = { ...opts };
@@ -67,7 +70,11 @@ export default function FieldDialog({ client, tableId, field, anchor, viewId, po
       if (!options.linkFieldId || !options.targetFieldId) return toastError(new Error("Choose a link field and a field to look up"));
     }
     if (type === "link" && !options.linkedTableId) return toastError(new Error("Choose a table to link to"));
+    if (type === "pathLookup" && !options.targetTableId) return toastError(new Error("Choose a table to collect records from"));
     if (type === "formula" && formulaError) return;
+    // A type that cannot match keeps the stored setting for when it can again; null removes a match.
+    if (!MATCH_TYPES.has(type)) delete options.match;
+    else if (field?.options.match && !options.match) options.match = null as never;
     setBusy(true);
     try {
       if (field) {
@@ -108,7 +115,7 @@ export default function FieldDialog({ client, tableId, field, anchor, viewId, po
   };
 
   return (
-    <Popover anchor={anchor} onClose={onClose} width={aiOn ? 440 : 380} className="field-dialog">
+    <Popover anchor={anchor} onClose={onClose} width={aiOn ? 440 : type === "pathLookup" ? 520 : 380} className="field-dialog">
       <div className="stack">
         <input className="input" placeholder="Field name" value={name} autoFocus onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && type !== "formula" && save()} />
         <select
@@ -132,6 +139,7 @@ export default function FieldDialog({ client, tableId, field, anchor, viewId, po
         </select>
         {aiOn && <AiFieldOptions client={client} tableId={tableId} field={field} type={type} setType={setType} opts={opts} set={set} viewId={viewId} />}
         <TypeOptions client={client} tableId={tableId} type={type} opts={opts} set={set} field={field} linkFields={linkFields} targetFields={targetFields} formulaError={formulaError} />
+        {MATCH_TYPES.has(type) && !aiOn && <MatchOptions client={client} tableId={tableId} field={field} opts={opts} set={set} />}
         <details>
           <summary className="muted small">Description</summary>
           <textarea className="input textarea" rows={2} value={description} onChange={e => setDescription(e.target.value)} placeholder="Help text shown in forms and the record view" />
@@ -220,8 +228,11 @@ function TypeOptions({ client, tableId, type, opts, set, field, linkFields, targ
             {client.schema.tables.map(t => <option key={t.id} value={t.id}>{t.name}{t.id === tableId ? " (this table)" : ""}</option>)}
           </select>
           <p className="muted small">A matching link field is added to the other table automatically.</p>
+          {opts.linkedTableId && <LinkDependency client={client} tableId={tableId} opts={opts} set={set} />}
         </div>
       );
+    case "pathLookup":
+      return <PathLookupOptions client={client} tableId={tableId} opts={opts} set={set} />;
     case "lookup":
     case "rollup":
       if (!linkFields.length) return <p className="muted small">Add a "Link to another record" field first.</p>;

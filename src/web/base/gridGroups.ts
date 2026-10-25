@@ -115,6 +115,7 @@ export function summaryText(f: Field, fn: SummaryFn, value: number | string | nu
 
 /** Summary functions that make sense for a field's type. */
 export function summaryOptions(f: Field): SummaryFn[] {
+  if (f.type === "pathLookup") return [];
   if (isNumberField(f)) return ["sum", "avg", "min", "max", "countFilled", "countUnique"];
   if (isDateField(f)) return ["min", "max", "countFilled"];
   return ["countFilled", "countUnique"];

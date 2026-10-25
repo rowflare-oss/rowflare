@@ -75,6 +75,7 @@ export function CellDisplay({ field, value, members = [], ctx }: { field: Field;
         </span>
       );
     case "link":
+    case "pathLookup":
       return <span className="chips">{(value as LinkValue[]).map(v => <Chip key={v.id} name={v.t || "Unnamed record"} color="var(--link-chip)" />)}</span>;
     case "user":
       return <span className="chips">{(Array.isArray(value) ? value : [value]).map(id => <Chip key={String(id)} name={members.find(m => m.id === id)?.name ?? "Unknown"} color="var(--user-chip)" />)}</span>;

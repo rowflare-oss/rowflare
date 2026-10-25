@@ -859,6 +859,123 @@
         }
       }
     },
+    "/api/v1/{baseId}/{table}/{recordId}/paths": {
+      "parameters": [
+        {
+          "name": "baseId",
+          "in": "path",
+          "required": true,
+          "description": "Base id (app...)",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "table",
+          "in": "path",
+          "required": true,
+          "description": "Table id (tbl...) or URL-encoded table name",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "recordId",
+          "in": "path",
+          "required": true,
+          "description": "Record id",
+          "schema": {
+            "type": "integer"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "explainPath",
+        "summary": "Explain a path lookup result",
+        "description": "One shortest chain of linked records from the record to a record in one of its path lookup field's results, start first. Each later hop names the link field the walk left the previous record through (`via`).",
+        "parameters": [
+          {
+            "name": "fieldId",
+            "in": "query",
+            "required": true,
+            "description": "Path lookup field of this table, by id or name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "required": true,
+            "description": "Id of a record in the field's results",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "table": {
+                            "type": "string",
+                            "description": "Table id"
+                          },
+                          "id": {
+                            "type": "integer"
+                          },
+                          "title": {
+                            "type": "string",
+                            "description": "Primary field text"
+                          },
+                          "via": {
+                            "type": "string",
+                            "description": "Link field name, or the matching field for a value match (id with returnFieldsByFieldId=true); missing on the first hop"
+                          },
+                          "match": {
+                            "type": "boolean",
+                            "description": "true when the hop joins two records whose values match instead of a link"
+                          }
+                        },
+                        "required": [
+                          "table",
+                          "id",
+                          "title"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          }
+        }
+      }
+    },
     "/api/hooks/{baseId}/{token}": {
       "post": {
         "tags": [
@@ -970,6 +1087,34 @@
           },
           "fields": {
             "$ref": "#/components/schemas/Fields"
+          },
+          "paths": {
+            "type": "object",
+            "description": "Path lookup cells that list only part of their records, by field: the full count, and incomplete when a limit cut the search short",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer"
+                },
+                "incomplete": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "total"
+              ]
+            }
+          },
+          "matches": {
+            "type": "object",
+            "description": "For text, email, URL and phone fields set to match a field of another table: ids of that table's records with the same value (ignoring case and surrounding spaces), at most 100, by field. Fields without a matching record are left out",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
           }
         }
       },
@@ -1023,6 +1168,7 @@
               "multiSelect",
               "link",
               "lookup",
+              "pathLookup",
               "rollup",
               "formula"
             ]

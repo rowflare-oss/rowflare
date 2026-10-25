@@ -8,14 +8,17 @@
 // - lookups, rollups and formulas are materialized into the row and maintained incrementally;
 // - column-wide work (new formula, type conversion) runs in batches from the alarm handler.
 import { generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
-import type { Cells, Choice, Field, FieldOptions, FieldType, GroupLevel, JobInfo, LinkValue, Member, Row, Schema, FilterSpec, Table, View, ViewConfig, ViewType, Dashboard, Widget } from "../../shared/types";
+import type { Cells, Choice, Field, FieldOptions, FieldType, GroupLevel, JobInfo, LinkValue, MatchOptions, Member, Row, Schema, FilterSpec, Table, View, ViewConfig, ViewType, Dashboard, Widget } from "../../shared/types";
+import { keyedFieldIds, keyTableOf, MATCH_TYPES, matchKey, validMatches } from "../../shared/matches";
+import { allowedEdges, MAX_PATH_DEPTH, pathFieldProblem } from "../../shared/paths";
+import { hopsTo, nodeKey, planOf, Reach, REACH_LIMITS, type PathPlan, type ReachLimits } from "./reach";
 import { COLORS, COMPUTED_TYPES, groupsByDay, isDateField, isNumberField } from "../../shared/types";
 import { coerceCell, displayCell, formulaValue, type CoerceContext } from "../../shared/cells";
 import { compileFormula, evaluate, FormulaError, type Compiled, type FieldRef, type Value } from "../../shared/formula";
 import { aggregate } from "../../shared/rollup";
 import { isSafeId, newChoiceId, newDashboardId, newFieldId, newTableId, newViewId, newWidgetId } from "../../shared/ids";
 import { checkWidget, defaultSize, MAX_WIDGETS, SOURCE_KEYS, type LayoutItemInput, type WidgetInput, type WidgetPatch } from "../../shared/widgets";
-import { filterSql, orderSql, rangeSql, searchSql, sortExpr, valueExpr, type DateRange } from "./query";
+import { filterSql, orderSql, rangeSql, searchSql, sortExpr, valueExpr, type DateRange, type FilterContext } from "./query";
 import type { ButtonInfo } from "../../shared/automations";
 import { Aggregator, OTHER_KEY, validateAggregate, type AggregateInput, type AggregateResult, type GroupKey } from "./aggregate";
 import type { LimitInfo } from "../hosting";
@@ -32,6 +35,10 @@ export interface MutationResult {
   schema?: Schema;
   /** Ids of records made by createRows, in input order. */
   created?: number[];
+  /** Tables whose changed rows were returned without path lookup values. */
+  unfilled?: string[];
+  /** Fields whose values the write changed, by table; "__new" when it created rows. Not sent to clients. */
+  fields?: Record<string, string[]>;
 }
 
 /** A row a write touched directly, with its stored state before the write (null for new rows). */
@@ -138,6 +145,12 @@ interface Cache {
   /** Link fields (in any table) that point at the given table id. */
   incoming: Map<string, Field[]>;
   members: Map<string, Member>;
+  /** Walk plans of path lookup fields, null when the field is broken; filled on first use. */
+  pathPlans: Map<string, PathPlan | null>;
+  /** Fields with a key table, by table, and whether the table is filled. */
+  keyed: Map<string, { fieldId: string; ready: boolean }[]>;
+  /** Value matches that work. */
+  matches: { source: Field; target: Field }[];
 }
 
 export class UserError extends Error {
@@ -155,7 +168,9 @@ export function limitError(message: string, limit: LimitInfo): UserError {
 }
 
 /** Types that cannot be a table's primary field (it names records in links). */
-const NOT_PRIMARY: ReadonlySet<FieldType> = new Set(["link", "attachment", "checkbox", "lookup", "rollup", "button"]);
+const NOT_PRIMARY: ReadonlySet<FieldType> = new Set(["link", "attachment", "checkbox", "lookup", "rollup", "button", "pathLookup"]);
+/** Records shown in one path lookup cell; the rest are counted in Row.paths. */
+const PATH_CELL_MAX = 100;
 const INLINE_JOB_ROWS = 2000;
 const JOB_BATCH = 500;
 const BROADCAST_LIMIT = 500;
@@ -193,6 +208,10 @@ export class BaseStore {
   private cache?: Cache;
   /** Aggregate results by table and request; any write or schema change in the base clears it (rollups and lookups cross tables). */
   private aggCache = new Map<string, AggregateResult>();
+  /** Source records with a non-empty path lookup, by field; cleared with aggCache, since any write can change paths. */
+  private pathCache = new Map<string, number[]>();
+  /** Limits of path lookup walks; tests lower them. */
+  pathLimits: ReachLimits = REACH_LIMITS;
   onSchemaChange?: () => void;
   /** Button stubs for the schema; set by the Durable Object. */
   buttonsOf?: () => ButtonInfo[];
@@ -225,6 +244,8 @@ export class BaseStore {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS _jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, label TEXT NOT NULL, payload TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`);
     // Files stored in R2 for this base, with the size R2 reported; cells carry sizes too, but those come from clients.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS _files (key TEXT PRIMARY KEY, size INTEGER NOT NULL, created_at INTEGER NOT NULL, unref_since INTEGER)`);
+    // Fields with a key table k_<field id> for value matches; ready once the job filling it from existing rows is done.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS _keys (field_id TEXT PRIMARY KEY, ready INTEGER NOT NULL)`);
   }
 
   // ---------- small helpers ----------
@@ -259,11 +280,12 @@ export class BaseStore {
 
   invalidate() {
     this.cache = undefined;
-    this.aggCache.clear();
+    this.clearAggCache();
   }
 
   clearAggCache() {
     this.aggCache.clear();
+    this.pathCache.clear();
   }
 
   private loadCache(): Cache {
@@ -308,11 +330,17 @@ export class BaseStore {
     for (const [tid, list] of byTable) computeOrder.set(tid, this.topoOrder(list, compiled));
     const members = new Map<string, Member>();
     for (const m of JSON.parse(this.meta("members") ?? "[]") as Member[]) members.set(m.id, m);
-    return { version: Number(this.meta("version") ?? "1"), tables, fields, byTable, views, dashboards, compiled, computeOrder, incoming, members };
+    const keyed = new Map<string, { fieldId: string; ready: boolean }[]>();
+    for (const k of this.all<{ field_id: string; ready: number }>("SELECT field_id, ready FROM _keys")) {
+      const f = fields.get(k.field_id);
+      if (f) (keyed.get(f.tableId) ?? keyed.set(f.tableId, []).get(f.tableId)!).push({ fieldId: f.id, ready: !!k.ready });
+    }
+    return { version: Number(this.meta("version") ?? "1"), tables, fields, byTable, views, dashboards, compiled, computeOrder, incoming, members, pathPlans: new Map(), keyed, matches: validMatches([...fields.values()]) };
   }
 
+  /** Path lookups are computed on read and never stored, so formulas cannot refer to them. */
   private fieldRefs(list: Field[]): FieldRef[] {
-    return list.map(f => ({ id: f.id, name: f.name, type: valueTypeOf(f) }));
+    return list.filter(f => f.type !== "pathLookup").map(f => ({ id: f.id, name: f.name, type: valueTypeOf(f) }));
   }
 
   private depsOf(f: Field, compiled: Map<string, Compiled>): string[] {
@@ -407,7 +435,7 @@ export class BaseStore {
   setMembers(members: Member[]) {
     this.setMeta("members", JSON.stringify(members));
     if (this.cache) this.cache.members = new Map(members.map(m => [m.id, m]));
-    this.aggCache.clear();
+    this.clearAggCache();
   }
 
   private userName = (id: string) => this.c.members.get(id)?.name ?? id;
@@ -417,6 +445,8 @@ export class BaseStore {
   private toRow(r: RowRec, fields: Field[]): Row {
     const cells: Cells = {};
     for (const f of fields) {
+      // A field converted to a path lookup may leave its old value in the row; path values are filled on read.
+      if (f.type === "pathLookup") continue;
       const v = r.data[f.id];
       if (v !== undefined && v !== null) cells[f.id] = v;
     }
@@ -447,7 +477,8 @@ export class BaseStore {
     };
   }
 
-  getRows(tableId: string, ids: number[]): Row[] {
+  /** Rows by id, in the given order. `paths: false` skips path lookups for callers that cannot use them (aggregates). */
+  getRows(tableId: string, ids: number[], opts: { paths?: boolean } = {}): Row[] {
     const t = this.table(tableId);
     const fields = this.fieldsOf(tableId);
     const found = new Map<number, RowRec>();
@@ -459,7 +490,12 @@ export class BaseStore {
         found.set(rec.id, rec);
       }
     }
-    return this.decorate(tableId, ids.filter(id => found.has(id)).map(id => this.toRow(found.get(id)!, fields)));
+    const rows = this.decorate(tableId, ids.filter(id => found.has(id)).map(id => this.toRow(found.get(id)!, fields)));
+    if (opts.paths !== false) {
+      this.fillPaths(tableId, rows);
+      this.fillMatches(tableId, rows);
+    }
+    return rows;
   }
 
   getRow(tableId: string, id: number): Row | undefined {
@@ -479,11 +515,15 @@ export class BaseStore {
     }
     const groupLevels = (levels ?? []).filter(l => fields.has(l.fieldId) && isSafeId(l.fieldId));
     if (groupLevels.length > 3) throw new UserError("Group by at most 3 fields");
+    for (const id of [...(sorts ?? []).map(x => x.fieldId), ...groupLevels.map(l => l.fieldId), groupFieldId]) {
+      if (id && fields.get(id)?.type === "pathLookup") throw unprocessable(`"${fields.get(id)!.name}" is a path lookup; path lookups cannot be sorted or grouped`);
+    }
     const where: string[] = [];
     const params: unknown[] = [];
-    const f = filterSql(filters, fields);
+    const ctx = this.filterCtx();
+    const f = filterSql(filters, fields, ctx);
     if (f) { where.push(f.sql); params.push(...f.params); }
-    const xf = filterSql(q.extraFilters, fields);
+    const xf = filterSql(q.extraFilters, fields, ctx);
     if (xf) { where.push(xf.sql); params.push(...xf.params); }
     if (q.range) {
       const r = rangeSql(this.checkRange(q.range, fields), fields);
@@ -556,7 +596,7 @@ export class BaseStore {
     }
     const ids = this.aggIds(tableId, input);
     const agg = new Aggregator(fields, input, (f, r) => this.rawFromRow(f, r), this.userName);
-    for (let i = 0; i < ids.length; i += 1000) agg.add(this.getRows(tableId, ids.slice(i, i + 1000)));
+    for (let i = 0; i < ids.length; i += 1000) agg.add(this.getRows(tableId, ids.slice(i, i + 1000), { paths: false }));
     const result = agg.result();
     this.aggCache.set(key, result);
     if (this.aggCache.size > AGG_CACHE_SIZE) this.aggCache.delete(this.aggCache.keys().next().value!);
@@ -577,7 +617,7 @@ export class BaseStore {
     const ids = this.aggIds(tableId, input);
     const out: number[] = [];
     for (let i = 0; i < ids.length; i += 1000) {
-      for (const r of this.getRows(tableId, ids.slice(i, i + 1000))) {
+      for (const r of this.getRows(tableId, ids.slice(i, i + 1000), { paths: false })) {
         const keys = agg.keysOf(r).map(k => JSON.stringify(k));
         if (!(kept ? keys.some(k => !kept.has(k)) : keys.includes(want))) continue;
         if (out.length === max) return { ids: out, truncated: true };
@@ -589,7 +629,7 @@ export class BaseStore {
   /** Ids among `ids` whose current values match the filter, in the given order; all of them without a filter. */
   matchRows(tableId: string, filters: FilterSpec | undefined, ids: number[]): number[] {
     if (!ids.length) return [];
-    const f = filterSql(filters, this.fieldMap(tableId));
+    const f = filterSql(filters, this.fieldMap(tableId), this.filterCtx());
     if (!f) return ids;
     const t = this.table(tableId);
     const hit = new Set(this.all<{ id: number }>(`SELECT id FROM ${t.phys} WHERE id IN (SELECT value FROM json_each(?)) AND ${f.sql}`, JSON.stringify(ids), ...f.params).map(r => r.id));
@@ -599,7 +639,8 @@ export class BaseStore {
   /** The same test against earlier versions of rows (data as stored JSON text), with the view filter SQL. */
   matchSnapshots(tableId: string, filters: FilterSpec | undefined, snaps: { id: number; data: string; createdAt: number; updatedAt: number }[]): number[] {
     if (!snaps.length) return [];
-    const f = filterSql(filters, this.fieldMap(tableId));
+    // Path lookups are not part of a snapshot; they are tested as they are now.
+    const f = filterSql(filters, this.fieldMap(tableId), this.filterCtx());
     if (!f) return snaps.map(s => s.id);
     const json = "[" + snaps.map(s => `{"id":${s.id},"data":${s.data},"c":${s.createdAt},"u":${s.updatedAt}}`).join(",") + "]";
     const hit = new Set(
@@ -635,6 +676,176 @@ export class BaseStore {
 
 
 
+
+  // ---------- path lookups ----------
+
+  /** Why a path lookup cannot produce values, or null. */
+  pathProblem(fieldId: string): string | null {
+    const f = this.field(fieldId);
+    return f.type === "pathLookup" ? pathFieldProblem(f, [...this.c.fields.values()], new Set(this.c.tables.keys())) : null;
+  }
+
+  private pathPlan(f: Field): PathPlan | null {
+    const plans = this.c.pathPlans;
+    if (!plans.has(f.id)) {
+      const o = f.options;
+      const edges = !this.pathProblem(f.id) ? allowedEdges([...this.c.fields.values()], f.tableId, o.targetTableId!, o.pathDirection ?? "dependents", o.excludeLinkFieldIds) : [];
+      const plan = edges.length ? planOf(edges, f.tableId, o.targetTableId!, o.maxDepth) : null;
+      if (plan && edges.some(e => e.keys && ![e.keys.from, e.keys.to].every(k => this.keyReady(k.slice(2))))) plan.pending = true;
+      plans.set(f.id, plan);
+    }
+    return plans.get(f.id)!;
+  }
+
+  private checkPathLookup(tableId: string, o: FieldOptions) {
+    if (!o.targetTableId || !this.c.tables.has(o.targetTableId)) throw new UserError("Choose a target table");
+    const target = this.fieldMap(o.targetTableId);
+    for (const c of o.targetFilter?.conditions ?? []) {
+      const f = target.get(c?.fieldId);
+      if (!f || f.type === "pathLookup") throw new UserError("Target conditions must use fields of the target table, other than path lookups");
+    }
+    const links = new Set([...this.c.fields.values()].filter(f => f.type === "link" || f.options.match).map(f => f.id));
+    o.excludeLinkFieldIds = (o.excludeLinkFieldIds ?? []).filter(id => links.has(id));
+    if (!allowedEdges([...this.c.fields.values()], tableId, o.targetTableId, o.pathDirection ?? "dependents", o.excludeLinkFieldIds).length) {
+      throw new UserError(`No links lead from this table to ${this.table(o.targetTableId).name} in that direction`);
+    }
+  }
+
+  /** Target records that match the field's target conditions, among `ids` (all of them without conditions). */
+  private matchingTargets(f: Field, ids: number[]): Set<number> {
+    return new Set(this.matchRows(f.options.targetTableId!, f.options.targetFilter, ids));
+  }
+
+  /** Fills path lookup cells of rows read from the table: linked-record values, at most 100 per cell. */
+  private fillPaths(tableId: string, rows: Row[]) {
+    const fields = this.fieldsOf(tableId).filter(f => f.type === "pathLookup");
+    if (!fields.length || !rows.length) return;
+    // One walker per read: link lookups are shared between rows, and the time limit covers the whole page.
+    const reach = new Reach(this, this.pathLimits);
+    const titles = new Map<string, Set<number>>();
+    const cells: { row: Row; f: Field; ids: number[] }[] = [];
+    for (const f of fields) {
+      const plan = this.pathPlan(f);
+      if (!plan) continue;
+      const found = rows.map(r => {
+        const w = reach.walk(plan, new Map([[tableId, [r.id]]]));
+        return { row: r, ids: [...(w.reached.get(plan.target) ?? [])], truncated: w.truncated || !!plan.pending };
+      });
+      const ok = f.options.targetFilter ? this.matchingTargets(f, [...new Set(found.flatMap(x => x.ids))]) : null;
+      for (const x of found) {
+        const hits = (ok ? x.ids.filter(id => ok.has(id)) : x.ids).sort((a, b) => a - b);
+        if (hits.length > PATH_CELL_MAX || x.truncated) (x.row.paths ??= {})[f.id] = { total: hits.length, ...(x.truncated ? { incomplete: true } : {}) };
+        const shown = hits.slice(0, PATH_CELL_MAX);
+        if (!shown.length) continue;
+        cells.push({ row: x.row, f, ids: shown });
+        const set = titles.get(plan.target) ?? titles.set(plan.target, new Set()).get(plan.target)!;
+        for (const id of shown) set.add(id);
+      }
+    }
+    const text = new Map<string, string>();
+    for (const [t, ids] of titles) for (const [id, s] of this.titlesOf(t, [...ids])) text.set(nodeKey(t, id), s);
+    for (const { row, f, ids } of cells) row.cells[f.id] = ids.map(id => ({ id, t: text.get(nodeKey(f.options.targetTableId!, id)) ?? "" }));
+  }
+
+  /** Fills `row.matches`: for each field set to match another table, the records with an equal value, at most 100. */
+  private fillMatches(tableId: string, rows: Row[]) {
+    if (!rows.length) return;
+    for (const { source, target } of this.c.matches) {
+      if (source.tableId !== tableId || !this.keyReady(source.id) || !this.keyReady(target.id)) continue;
+      const found = new Map<number, number[]>();
+      // Many rows can share a value, so the cap is applied in SQL rather than after reading every pair.
+      const sql = `SELECT k, v FROM (SELECT s.id k, t.id v, row_number() OVER (PARTITION BY s.id ORDER BY t.id) n FROM ${keyTableOf(source.id)} s JOIN ${keyTableOf(target.id)} t ON t.v = s.v WHERE s.id IN (SELECT value FROM json_each(?))) WHERE n <= ${PATH_CELL_MAX} ORDER BY k, v`;
+      for (const r of this.all<{ k: number; v: number }>(sql, JSON.stringify(rows.map(r => r.id)))) {
+        (found.get(r.k) ?? found.set(r.k, []).get(r.k)!).push(r.v);
+      }
+      if (!found.size) continue;
+      const titles = this.titlesOf(target.tableId, [...new Set([...found.values()].flat())]);
+      for (const row of rows) {
+        const hits = found.get(row.id);
+        if (hits) (row.matches ??= {})[source.id] = hits.map(id => ({ id, t: titles.get(id) ?? "" }));
+      }
+    }
+  }
+
+  /** Primary field text of records, as link cells show it. */
+  private titlesOf(tableId: string, ids: number[]): Map<number, string> {
+    const out = new Map<number, string>();
+    const t = this.table(tableId);
+    for (let i = 0; i < ids.length; i += 1000) {
+      for (const r of this.all(`SELECT * FROM ${t.phys} WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids.slice(i, i + 1000)))) {
+        const rec = this.parseRec(r);
+        out.set(rec.id, this.primaryText(tableId, rec));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Source records whose path lookup is not empty, for "is empty" / "is not empty" filters. One walk backwards from the
+   * matching target records answers the whole column. A walk cut short by a limit is refused rather than returned:
+   * a partial set would show used records as unused.
+   */
+  private pathSourceIds(f: Field): number[] {
+    const hit = this.pathCache.get(f.id);
+    if (hit) return hit;
+    const plan = this.pathPlan(f);
+    if (!plan) throw unprocessable(`"${f.name}" cannot be filtered: ${this.pathProblem(f.id)}`);
+    if (plan.pending) throw unprocessable(`"${f.name}" is still being prepared. Try again in a moment.`);
+    const t = this.table(plan.target);
+    const cond = filterSql(f.options.targetFilter, this.fieldMap(plan.target));
+    const seeds = this.all<{ id: number }>(`SELECT id FROM ${t.phys}${cond ? " WHERE " + cond.sql : ""}`, ...(cond?.params ?? [])).map(r => r.id);
+    const w = new Reach(this, this.pathLimits, false).walk(plan, new Map([[plan.target, seeds]]), { backward: true });
+    if (w.truncated) throw unprocessable(`"${f.name}" reaches too many records to filter on. Add target conditions or leave some links out of its paths.`);
+    const ids = [...(w.reached.get(plan.source) ?? [])];
+    this.pathCache.set(f.id, ids);
+    return ids;
+  }
+
+  /** Tables with path lookups that pass through a table this write changed; open views of them reload, since path values are not pushed with rows. */
+  pathTablesAffected(result: MutationResult): string[] {
+    const changed = new Set([...result.changes.map(c => c.tableId), ...result.deleted.map(d => d.tableId)]);
+    const out = new Set<string>(result.unfilled ?? []);
+    if (!changed.size) return [...out];
+    // Rows created or deleted, or one of these fields written; results without field details count as any change.
+    const valuesChanged = (tableId: string, fieldIds: string[]) => {
+      if (!changed.has(tableId)) return false;
+      if (result.deleted.some(d => d.tableId === tableId) || !result.fields) return true;
+      const f = result.fields[tableId] ?? [];
+      return f.includes("__new") || fieldIds.some(id => f.includes(id));
+    };
+    for (const f of this.c.fields.values()) {
+      if (f.type !== "pathLookup" || out.has(f.tableId)) continue;
+      const plan = this.pathPlan(f);
+      if (!plan) continue;
+      // An edit to the source table alone changes no path: its link edits also change the linked table's rows.
+      // The source counts only when a walk can come back into it (a self-link or a loop), or when it leaves through a
+      // value match, whose values live in the source rows.
+      const matchKeys = (plan.forward.get(plan.source) ?? []).flatMap(st => (st.keys ? [st.keys.at.slice(2)] : []));
+      const tables = [plan.target, ...plan.backward.keys(), ...[...plan.forward.keys()].filter(t => t !== plan.source)];
+      if (tables.some(t => changed.has(t)) || (matchKeys.length && valuesChanged(plan.source, matchKeys))) out.add(f.tableId);
+    }
+    // Matched cells show records of the matched table, by their value and title.
+    for (const m of this.c.matches) if (valuesChanged(m.target.tableId, [m.target.id, this.table(m.target.tableId).primaryFieldId])) out.add(m.source.tableId);
+    return [...out];
+  }
+
+  private filterCtx(): FilterContext {
+    return { pathIds: f => this.pathSourceIds(f), refuse: message => { throw unprocessable(message); } };
+  }
+
+  /** One shortest chain of linked records from a record to one of its path lookup results, or null when there is none. */
+  explainPath(fieldId: string, rowId: number, targetId: number): { tableId: string; id: number; t: string; fieldId?: string }[] | null {
+    const f = this.field(fieldId);
+    if (f.type !== "pathLookup") throw new UserError("Not a path lookup field");
+    const plan = this.pathPlan(f);
+    if (!plan || !this.getRows(f.tableId, [rowId], { paths: false }).length) return null;
+    if (f.options.targetFilter && !this.matchingTargets(f, [targetId]).has(targetId)) return null;
+    const start = nodeKey(f.tableId, rowId), goal = nodeKey(plan.target, targetId);
+    const w = new Reach(this, this.pathLimits).walk(plan, new Map([[f.tableId, [rowId]]]), { parents: true, stopAt: goal });
+    const hops = hopsTo(w, start, goal);
+    if (!hops) return null;
+    return hops.map(h => ({ ...h, t: this.titlesOf(h.tableId, [h.id]).get(h.id) ?? "" }));
+  }
 
   /** Rows with every field, in view order, used by CSV / JSON export and the public API. */
   *iterateRows(tableId: string, viewId?: string, batch = 1000): Generator<Row[]> {
@@ -967,6 +1178,7 @@ export class BaseStore {
     const ts = now();
     const out: MutationResult = { changes: [], deleted: [] };
     const byTable = new Map<string, RowRec[]>();
+    const fieldSets = new Map<string, Set<string>>();
     for (const [k, r] of tx.rows) {
       if (!r.dirty) continue;
       const tableId = k.slice(0, k.lastIndexOf(":"));
@@ -980,18 +1192,36 @@ export class BaseStore {
         this.sql.exec(`UPDATE ${t.phys} SET data = ? WHERE id = ?`, JSON.stringify(r.data), r.id);
       }
       r.dirty = false;
+      const changed = (fieldSets.get(tableId) ?? fieldSets.set(tableId, new Set()).get(tableId)!);
+      if (!r.orig) changed.add("__new");
+      for (const f of tx.fields.get(k) ?? []) changed.add(f);
+      const keyed = this.c.keyed.get(tableId);
+      if (keyed) this.writeKeys(keyed, r, tx.fields.get(k));
       const list = byTable.get(tableId) ?? [];
       list.push(r);
       byTable.set(tableId, list);
     }
     for (const [tableId, list] of byTable) out.changes.push({ tableId, rows: this.decorate(tableId, list.map(r => this.toRow(r, this.fieldsOf(tableId)))) });
     for (const [tableId, ids] of tx.deleted) out.deleted.push({ tableId, ids });
+    // Kept off the wire: results are sent to clients as they are.
+    Object.defineProperty(out, "fields", { value: Object.fromEntries([...fieldSets].map(([t, f]) => [t, [...f]])), enumerable: false });
     if (tx.schemaDirty) {
       this.bumpVersion();
       out.schema = this.schema();
     }
     this.maxOrdCache.clear();
     return out;
+  }
+
+  /** Rewrites the keys of a written row's matched columns that changed (all of them for a new row). */
+  private writeKeys(keyed: { fieldId: string }[], r: RowRec, changed: Set<string> | undefined) {
+    for (const { fieldId } of keyed) {
+      if (r.orig && !changed?.has(fieldId)) continue;
+      const kt = keyTableOf(fieldId);
+      this.sql.exec(`DELETE FROM ${kt} WHERE id = ?`, r.id);
+      const v = matchKey(r.data[fieldId]);
+      if (v) this.sql.exec(`INSERT INTO ${kt} (v, id) VALUES (?, ?)`, v, r.id);
+    }
   }
 
   private applyCells(tx: Tx, tableId: string, rec: RowRec, cells: Cells, ctx: CoerceContext) {
@@ -1021,14 +1251,27 @@ export class BaseStore {
 
   private run(actor: Actor | undefined, fn: (tx: Tx) => void): MutationResult {
     let out!: MutationResult;
+    let direct = false;
     this.storage.transactionSync(() => {
       const tx = new Tx();
       fn(tx);
       this.propagate(tx);
       out = this.flush(tx, actor);
+      direct = !!actor && !tx.noTriggers;
+      // Trigger checks below run inside the transaction and must see path lookups as this write left them.
+      this.pathCache.clear();
       if (this.onWrite) this.onWrite(this.written(tx, actor ?? { userId: "system", name: "System" }, !!actor && !tx.noTriggers && !this.writeCtx.silent, !actor || tx.noTriggers));
     });
-    this.aggCache.clear();
+    this.clearAggCache();
+    // Read after the commit, so writes never pay for path lookups. Only a person's own edits are filled; jobs, imports and
+    // batches big enough to reload leave their tables to the reload that pathTablesAffected asks for.
+    for (const c of out.changes) {
+      if (!this.fieldsOf(c.tableId).some(f => f.type === "pathLookup") && !this.c.matches.some(m => m.source.tableId === c.tableId)) continue;
+      if (direct && c.rows.length <= BROADCAST_LIMIT) {
+        this.fillPaths(c.tableId, c.rows);
+        this.fillMatches(c.tableId, c.rows);
+      } else (out.unfilled ??= []).push(c.tableId);
+    }
     return out;
   }
 
@@ -1128,6 +1371,7 @@ export class BaseStore {
       for (let i = 0; i < gone.length; i += 100) {
         const chunk = gone.slice(i, i + 100);
         this.sql.exec(`DELETE FROM ${t.phys} WHERE id IN (${chunk.map(() => "?").join(",")})`, ...chunk);
+        for (const k of this.c.keyed.get(tableId) ?? []) this.sql.exec(`DELETE FROM ${keyTableOf(k.fieldId)} WHERE id IN (${chunk.map(() => "?").join(",")})`, ...chunk);
       }
       for (const id of gone) {
         const k = this.key(tableId, id);
@@ -1187,7 +1431,10 @@ export class BaseStore {
       });
       this.sql.exec("INSERT INTO _views (id, table_id, name, type, config, ord) VALUES (?, ?, ?, ?, ?, ?)", newViewId(), id, "Grid view", "grid", "{}", "a0");
       this.bumpVersion();
+      for (const f of this.fieldsOf(id)) if (f.options.match) this.checkMatch(f.id, f.type, f.options.match);
+      this.syncKeys();
     });
+    this.runInlineJobs();
     const n = input.emptyRows ?? (input.fields?.length ? 0 : 3);
     // The blank rows of a new table are placeholders, not counted against a plan's record limit.
     result = n ? this.createRows(actor ?? { userId: "", name: "" }, id, Array.from({ length: n }, () => ({})), { noLimit: true }) : { changes: [], deleted: [] };
@@ -1217,7 +1464,7 @@ export class BaseStore {
     }
     if (patch.primaryFieldId && patch.primaryFieldId !== t.primaryFieldId) {
       const f = this.field(patch.primaryFieldId);
-      if (f.tableId !== tableId || ["link", "attachment", "checkbox", "lookup", "rollup", "button"].includes(f.type)) throw new UserError("This field cannot be the primary field");
+      if (f.tableId !== tableId || NOT_PRIMARY.has(f.type)) throw new UserError("This field cannot be the primary field");
       this.sql.exec("UPDATE _tables SET primary_field_id = ? WHERE id = ?", f.id, tableId);
       this.bumpVersion();
       this.refreshLinkTitles(tableId);
@@ -1242,6 +1489,7 @@ export class BaseStore {
       this.sql.exec("DELETE FROM _views WHERE table_id = ?", tableId);
       this.sql.exec("DELETE FROM _tables WHERE id = ?", tableId);
       this.bumpVersion();
+      this.syncKeys();
     });
     return this.schema();
   }
@@ -1351,6 +1599,19 @@ export class BaseStore {
         break;
       case "link":
         Object.assign(out, { linkedTableId: o.linkedTableId, inverseFieldId: o.inverseFieldId, linkTable: o.linkTable, linkSide: o.linkSide });
+        if (typeof o.dependsOn === "boolean") out.dependsOn = o.dependsOn;
+        if (o.pathRole === "none" || o.pathRole === "dependency") out.pathRole = o.pathRole;
+        break;
+      case "pathLookup":
+        out.targetTableId = typeof o.targetTableId === "string" ? o.targetTableId : undefined;
+        out.pathDirection = o.pathDirection === "dependencies" ? "dependencies" : "dependents";
+        out.excludeLinkFieldIds = Array.isArray(o.excludeLinkFieldIds) ? [...new Set(o.excludeLinkFieldIds.filter(x => typeof x === "string"))] : [];
+        if (o.targetFilter?.conditions?.length) out.targetFilter = { conjunction: o.targetFilter.conjunction === "or" ? "or" : "and", conditions: o.targetFilter.conditions };
+        if (o.maxDepth !== undefined && o.maxDepth !== null) {
+          const d = Number(o.maxDepth);
+          if (!Number.isInteger(d) || d < 1 || d > MAX_PATH_DEPTH) throw new UserError(`The depth must be a whole number from 1 to ${MAX_PATH_DEPTH}`);
+          out.maxDepth = d;
+        }
         break;
       case "lookup":
       case "rollup":
@@ -1365,6 +1626,13 @@ export class BaseStore {
         if (o.format) out.format = o.format;
         if (o.precision !== undefined) out.precision = o.precision;
         break;
+    }
+    // Kept on any type, so a match survives a round trip through a type that cannot match.
+    const m = o.match;
+    if (m && typeof m.fieldId === "string") {
+      out.match = { fieldId: m.fieldId };
+      if (typeof m.dependsOn === "boolean") out.match.dependsOn = m.dependsOn;
+      if (m.pathRole === "none" || m.pathRole === "dependency") out.match.pathRole = m.pathRole;
     }
     if (isAiOutputType(type) && o.ai) {
       try {
@@ -1384,9 +1652,11 @@ export class BaseStore {
       if (!link || link.type !== "link" || link.tableId !== tableId) throw new UserError("Choose a link field in this table");
       const target = options.targetFieldId ? this.c.fields.get(options.targetFieldId) : undefined;
       if (!target || target.tableId !== link.options.linkedTableId) throw new UserError("Choose a field from the linked table");
+      if (target.type === "pathLookup") throw new UserError("Path lookups cannot be looked up or rolled up");
       if (type === "rollup") options.resultType = rollupResultType(options.fn ?? "sum", target);
       else options.resultType = "array";
     }
+    if (type === "pathLookup") this.checkPathLookup(tableId, options);
     if (type === "formula") {
       const refs = this.fieldRefs(this.fieldsOf(tableId).filter(f => f.id !== selfId));
       try {
@@ -1424,6 +1694,7 @@ export class BaseStore {
     for (const id of promptRefIds(ai.prompt)) {
       if (id === selfId) throw new UserError("An AI field cannot refer to itself");
       if (!fields.has(id)) throw new UserError("The prompt refers to a field that does not exist");
+      if (fields.get(id)!.type === "pathLookup") throw new UserError("Prompts cannot refer to path lookups");
     }
     for (const id of ai.imageFieldIds ?? []) if (fields.get(id)?.type !== "attachment") throw new UserError("Image fields must be attachment fields");
     const others = this.fieldsOf(tableId).filter(f => f.options.ai && f.id !== selfId);
@@ -1485,20 +1756,23 @@ export class BaseStore {
     let options = this.normalizeOptions(input.type, input.options ?? {});
     const last = this.one<{ o: string | null }>("SELECT max(ord) o FROM _fields WHERE table_id = ?", tableId)?.o ?? null;
     this.storage.transactionSync(() => {
-      if (input.type === "link") options = this.createLinkPair(tableId, id, input.options?.linkedTableId);
+      if (input.type === "link") options = this.createLinkPair(tableId, id, input.options?.linkedTableId, options);
       options = this.prepareComputed(tableId, input.type, options, id);
+      if (options.match) this.checkMatch(id, input.type, options.match);
       this.sql.exec(
         "INSERT INTO _fields (id, table_id, name, type, options, description, ord) VALUES (?, ?, ?, ?, ?, ?, ?)",
         id, tableId, name, input.type, JSON.stringify(options), input.description ?? null, generateKeyBetween(last, null),
       );
       this.bumpVersion();
+      this.syncKeys();
       if (input.type === "lookup" || input.type === "rollup" || input.type === "formula") this.enqueueJob("recompute", `Computing ${name}`, { tableId, fieldIds: [id], cursor: 0 }, this.rowCount(tableId));
     });
     this.runInlineJobs();
     return { fieldId: id, schema: this.schema() };
   }
 
-  private createLinkPair(tableId: string, fieldId: string, linkedTableId: string | undefined): FieldOptions {
+  /** `dir` carries dependsOn and pathRole as given for the new field; the inverse gets the mirror values. */
+  private createLinkPair(tableId: string, fieldId: string, linkedTableId: string | undefined, dir: FieldOptions = {}): FieldOptions {
     if (!linkedTableId || !this.c.tables.has(linkedTableId)) throw new UserError("Choose a table to link to");
     const lt = "l_" + this.nextSeq("link");
     this.sql.exec(`CREATE TABLE ${lt} (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY (a, b)) WITHOUT ROWID`);
@@ -1506,12 +1780,12 @@ export class BaseStore {
     const inverseId = newFieldId();
     const last = this.one<{ o: string | null }>("SELECT max(ord) o FROM _fields WHERE table_id = ?", linkedTableId)?.o ?? null;
     const invName = this.uniqueFieldName(linkedTableId, this.table(tableId).name);
-    const invOptions: FieldOptions = { linkedTableId: tableId, inverseFieldId: fieldId, linkTable: lt, linkSide: "b" };
+    const invOptions: FieldOptions = { linkedTableId: tableId, inverseFieldId: fieldId, linkTable: lt, linkSide: "b", ...mirrorDirection(dir) };
     this.sql.exec(
       "INSERT INTO _fields (id, table_id, name, type, options, description, ord) VALUES (?, ?, ?, 'link', ?, NULL, ?)",
       inverseId, linkedTableId, invName, JSON.stringify(invOptions), generateKeyBetween(last, null),
     );
-    return { linkedTableId, inverseFieldId: inverseId, linkTable: lt, linkSide: "a" };
+    return { linkedTableId, inverseFieldId: inverseId, linkTable: lt, linkSide: "a", ...directionOf(dir) };
   }
 
   updateField(fieldId: string, patch: { name?: string; type?: FieldType; options?: FieldOptions; description?: string }): Schema {
@@ -1527,16 +1801,25 @@ export class BaseStore {
         return;
       }
       const typeChanged = type !== old.type;
-      let options = this.normalizeOptions(type, { ...(typeChanged ? {} : old.options), ...(patch.options ?? {}) });
+      let options = this.normalizeOptions(type, { ...(typeChanged ? { match: old.options.match } : old.options), ...(patch.options ?? {}) });
       if (old.type === "link" && (typeChanged || (patch.options?.linkedTableId && patch.options.linkedTableId !== old.options.linkedTableId))) {
         this.dropLinkPair(old);
-        if (type === "link") options = this.createLinkPair(old.tableId, fieldId, patch.options?.linkedTableId);
+        if (type === "link") options = this.createLinkPair(old.tableId, fieldId, patch.options?.linkedTableId, options);
       } else if (type === "link" && typeChanged) {
-        options = this.createLinkPair(old.tableId, fieldId, patch.options?.linkedTableId);
+        options = this.createLinkPair(old.tableId, fieldId, patch.options?.linkedTableId, options);
       } else if (type === "link") {
-        options = { ...old.options };
+        options = { ...old.options, ...directionOf(options) };
+        const inv = old.options.inverseFieldId ? this.c.fields.get(old.options.inverseFieldId) : undefined;
+        if (inv && (options.dependsOn !== old.options.dependsOn || options.pathRole !== old.options.pathRole)) {
+          // Both sides of a pair always agree on who depends on whom.
+          const own = { dependsOn: options.dependsOn ?? old.options.linkSide === "a", pathRole: options.pathRole };
+          options = { ...options, ...directionOf(own) };
+          this.sql.exec("UPDATE _fields SET options = ? WHERE id = ?", JSON.stringify({ ...inv.options, dependsOn: undefined, pathRole: undefined, ...mirrorDirection(own) }), inv.id);
+        }
       }
       options = this.prepareComputed(old.tableId, type, options, fieldId);
+      // A match kept as it was may be broken on purpose (its column changed type); other edits still save.
+      if (patch.options?.match && JSON.stringify(options.match) !== JSON.stringify(old.options.match)) this.checkMatch(fieldId, type, options.match!);
       this.sql.exec("UPDATE _fields SET type = ?, options = ? WHERE id = ?", type, JSON.stringify(options), fieldId);
       this.bumpVersion();
       const rows = this.rowCount(old.tableId);
@@ -1544,6 +1827,8 @@ export class BaseStore {
       if (type === "lookup" || type === "rollup" || type === "formula") {
         const configChanged = typeChanged || JSON.stringify(options) !== JSON.stringify(old.options);
         if (configChanged) this.enqueueJob("recompute", `Computing ${name}`, { tableId: old.tableId, fieldIds: [fieldId], cursor: 0 }, rows);
+      } else if (type === "pathLookup") {
+        // Computed on read: nothing to rewrite.
       } else if (typeChanged || (type === "link" && old.type === "link")) {
         this.enqueueJob("convert", `Converting ${name}`, { tableId: old.tableId, fieldId, from: old, cursor: 0 }, rows);
       } else if ((type === "singleSelect" || type === "multiSelect") && options.choices) {
@@ -1555,9 +1840,53 @@ export class BaseStore {
       } else if (type === "number" && JSON.stringify(options) !== JSON.stringify(old.options) && options.precision !== old.options.precision) {
         this.enqueueJob("convert", `Updating ${name}`, { tableId: old.tableId, fieldId, from: old, cursor: 0 }, rows);
       }
+      // After the conversion jobs, so new keys are read from converted values.
+      this.syncKeys();
     });
     this.runInlineJobs();
     return this.schema();
+  }
+
+  private checkMatch(fieldId: string, type: FieldType, m: MatchOptions) {
+    if (!MATCH_TYPES.has(type)) throw new UserError("Only text, email, URL and phone fields can match another table");
+    if (m.fieldId === fieldId) throw new UserError("A field cannot match itself");
+    const target = this.c.fields.get(m.fieldId);
+    if (!target || !MATCH_TYPES.has(target.type)) throw new UserError("Choose a text, email, URL or phone field to match");
+  }
+
+  /** Whether a field's key table holds every row yet. */
+  keyReady(fieldId: string): boolean {
+    const f = this.c.fields.get(fieldId);
+    return !!f && !!this.c.keyed.get(f.tableId)?.some(k => k.fieldId === fieldId && k.ready);
+  }
+
+  /**
+   * Brings key tables in line with the matches that work: drops the ones no longer needed (a broken match keeps no keys)
+   * and creates the missing ones, filled by a job that runs inline for small tables. Called after every schema change.
+   */
+  private syncKeys() {
+    const want = keyedFieldIds([...this.c.fields.values()]);
+    const have = new Set(this.all<{ field_id: string }>("SELECT field_id FROM _keys").map(r => r.field_id));
+    let changed = false;
+    for (const id of have) {
+      if (want.has(id)) continue;
+      this.sql.exec(`DROP TABLE IF EXISTS ${keyTableOf(id)}`);
+      this.sql.exec("DELETE FROM _keys WHERE field_id = ?", id);
+      this.sql.exec("DELETE FROM _jobs WHERE kind = 'keys' AND json_extract(payload, '$.fieldId') = ?", id);
+      changed = true;
+    }
+    for (const id of want) {
+      if (have.has(id) || !isSafeId(id)) continue;
+      const f = this.field(id);
+      const kt = keyTableOf(id);
+      this.sql.exec(`CREATE TABLE ${kt} (v TEXT NOT NULL, id INTEGER NOT NULL)`);
+      this.sql.exec(`CREATE INDEX ${kt}_v ON ${kt} (v, id)`);
+      this.sql.exec(`CREATE INDEX ${kt}_id ON ${kt} (id)`);
+      this.sql.exec("INSERT INTO _keys (field_id, ready) VALUES (?, 0)", id);
+      this.enqueueJob("keys", `Indexing ${f.name}`, { tableId: f.tableId, fieldId: id, cursor: 0 }, this.rowCount(f.tableId));
+      changed = true;
+    }
+    if (changed) this.invalidate();
   }
 
   private enqueueDependents(tableId: string, fieldId: string, rows: number) {
@@ -1573,7 +1902,10 @@ export class BaseStore {
   deleteField(fieldId: string): Schema {
     const f = this.field(fieldId);
     if (this.table(f.tableId).primaryFieldId === fieldId) throw new UserError("The primary field cannot be deleted");
-    this.storage.transactionSync(() => this.deleteFieldInner(fieldId, true));
+    this.storage.transactionSync(() => {
+      this.deleteFieldInner(fieldId, true);
+      this.syncKeys();
+    });
     this.runInlineJobs();
     return this.schema();
   }
@@ -1770,6 +2102,41 @@ export class BaseStore {
     return !!this.one("SELECT 1 x FROM _jobs LIMIT 1");
   }
 
+  /**
+   * Fills a key table from existing rows, one batch per step. Rows written meanwhile keep their own keys through
+   * `flush`; a batch replaces the keys of its rows, so each record ends with exactly one up-to-date key.
+   */
+  private keysJobStep(jobId: number, p: { tableId: string; fieldId: string; cursor: number }): { result?: MutationResult; finished?: { tableId?: string }; more: boolean } {
+    const kt = keyTableOf(p.fieldId);
+    const rows = this.all<{ id: number; v: string | null }>(`SELECT id, json_extract(data, '$.${p.fieldId}') v FROM ${this.table(p.tableId).phys} WHERE id > ? ORDER BY id LIMIT ?`, p.cursor, JOB_BATCH);
+    this.storage.transactionSync(() => {
+      for (const r of rows) {
+        this.sql.exec(`DELETE FROM ${kt} WHERE id = ?`, r.id);
+        const v = matchKey(r.v);
+        if (v) this.sql.exec(`INSERT INTO ${kt} (v, id) VALUES (?, ?)`, v, r.id);
+      }
+      if (rows.length) this.sql.exec("UPDATE _jobs SET payload = ?, done = done + ? WHERE id = ?", JSON.stringify({ ...p, cursor: rows[rows.length - 1].id }), rows.length, jobId);
+      if (rows.length < JOB_BATCH) {
+        this.sql.exec("DELETE FROM _jobs WHERE id = ?", jobId);
+        this.sql.exec("UPDATE _keys SET ready = 1 WHERE field_id = ?", p.fieldId);
+      }
+    });
+    if (rows.length === JOB_BATCH) return { more: true };
+    this.invalidate();
+    return { result: { changes: [], deleted: [], unfilled: this.tablesUsingKeys(p.fieldId) }, more: this.hasJobs() };
+  }
+
+  /** Tables whose path lookups or matched cells read a key table: they reload once it is filled. */
+  private tablesUsingKeys(fieldId: string): string[] {
+    const out = new Set(this.c.matches.filter(m => m.source.id === fieldId || m.target.id === fieldId).map(m => m.source.tableId));
+    const kt = keyTableOf(fieldId);
+    for (const f of this.c.fields.values()) {
+      const plan = f.type === "pathLookup" ? this.pathPlan(f) : null;
+      if (plan && [...plan.forward.values()].some(steps => steps.some(st => st.keys?.at === kt || st.keys?.to === kt))) out.add(f.tableId);
+    }
+    return [...out];
+  }
+
   /** Small tables are processed inside the request; large ones are left for the alarm. */
   private runInlineJobs() {
     let guard = 0;
@@ -1790,6 +2157,7 @@ export class BaseStore {
       return { more: this.hasJobs() };
     }
     const t = this.table(p.tableId);
+    if (job.kind === "keys") return this.keysJobStep(job.id, p as { tableId: string; fieldId: string; cursor: number });
     const ids = this.all<{ id: number }>(`SELECT id FROM ${t.phys} WHERE id > ? ORDER BY id LIMIT ?`, p.cursor, JOB_BATCH).map(r => r.id);
     let result: MutationResult | undefined;
     if (ids.length) {
@@ -1932,6 +2300,28 @@ function rollupResultType(fn: string, target: Field): FieldOptions["resultType"]
   if (fn === "and" || fn === "or") return "boolean";
   if (fn === "arrayunique" || fn === "arraycompact") return "array";
   return "text";
+}
+
+/** The direction settings of a link field's options, without empty keys. */
+function directionOf(o: FieldOptions): FieldOptions {
+  const out: FieldOptions = {};
+  if (typeof o.dependsOn === "boolean") out.dependsOn = o.dependsOn;
+  if (o.pathRole) out.pathRole = o.pathRole;
+  return out;
+}
+
+/** The inverse field's direction settings for the given ones of its pair. */
+function mirrorDirection(o: FieldOptions): FieldOptions {
+  const out: FieldOptions = {};
+  if (typeof o.dependsOn === "boolean") out.dependsOn = !o.dependsOn;
+  if (o.pathRole) out.pathRole = o.pathRole;
+  return out;
+}
+
+function unprocessable(message: string): UserError {
+  const e = new UserError(message);
+  e.status = 422;
+  return e;
 }
 
 export function defaultChoices(names: string[]): Choice[] {

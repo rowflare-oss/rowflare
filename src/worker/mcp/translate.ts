@@ -30,6 +30,7 @@ const OPS_BY_KIND: Record<FilterKind, FilterOp[]> = {
   bool: ["eq", "neq"],
   select: ["eq", "neq", "anyOf", "noneOf"],
   array: ["eq", "neq", "contains", "ncontains", "anyOf", "noneOf", "allOf"],
+  path: [],
 };
 
 export const MAX_FILTER_VALUES = 50;
@@ -88,7 +89,7 @@ export function onlyFields(t: TableCtx, keys?: string[]): Set<string> | undefine
 }
 
 /** Types that need other fields to exist first, so create_table adds them one by one after the plain fields. */
-export const COMPLEX_TYPES: ReadonlySet<FieldType> = new Set(["link", "lookup", "rollup", "formula"]);
+export const COMPLEX_TYPES: ReadonlySet<FieldType> = new Set(["link", "lookup", "rollup", "formula", "pathLookup"]);
 
 export function toFieldOptions(schema: Schema, tableId: string, o: FieldSpecOptions | undefined, existing?: Field, services: AiServiceInfo[] = []): FieldOptions {
   const out: FieldOptions = {};
@@ -121,6 +122,27 @@ export function toFieldOptions(schema: Schema, tableId: string, o: FieldSpecOpti
   }
   if (o.targetField && !o.linkField) throw new HttpError(422, "targetField needs linkField: the link field in this table that leads to the target's table");
   if (o.linkedTable) out.linkedTableId = tableOf(schema, o.linkedTable).id;
+  if (o.dependsOn !== undefined) out.dependsOn = o.dependsOn;
+  if (o.pathRole) out.pathRole = o.pathRole;
+  if (o.match === null) out.match = null as never;
+  else if (o.match) {
+    const t = tableOf(schema, o.match.table);
+    out.match = { fieldId: fieldOf(fieldsOf(schema, t.id), o.match.field, t.name).id };
+    if (o.match.dependsOn !== undefined) out.match.dependsOn = o.match.dependsOn;
+    if (o.match.pathRole) out.match.pathRole = o.match.pathRole;
+  }
+  if (o.targetTable) {
+    const target = tableOf(schema, o.targetTable);
+    out.targetTableId = target.id;
+    out.pathDirection = o.direction ?? "dependents";
+    // User values in the filter are matched by id; members are not needed to resolve them here.
+    const ctx = { schema, table: target, fields: fieldsOf(schema, target.id), members: new Map(), origin: "" } as unknown as TableCtx;
+    if (o.targetFilter) out.targetFilter = toFilterSpec(ctx, o.targetFilter);
+    out.excludeLinkFieldIds = (o.excludeLinks ?? []).map(key => linkFieldOf(schema, key).id);
+    if (o.maxDepth !== undefined) out.maxDepth = o.maxDepth;
+  } else if (o.direction || o.targetFilter || o.excludeLinks || o.maxDepth !== undefined) {
+    throw new HttpError(422, "direction, targetFilter, excludeLinks and maxDepth need targetTable (they only apply to pathLookup fields)");
+  }
   if (o.linkField) {
     const table = schema.tables.find(t => t.id === tableId)!;
     const link = fieldOf(fieldsOf(schema, tableId), o.linkField, table.name);
@@ -132,6 +154,18 @@ export function toFieldOptions(schema: Schema, tableId: string, o: FieldSpecOpti
     }
   }
   return out;
+}
+
+/** A link field, or a field set to match another table, by id or "Table.Field". */
+function linkFieldOf(schema: Schema, key: string): Field {
+  const walked = (f: Field) => f.type === "link" || !!f.options.match;
+  const byId = schema.fields.find(f => f.id === key && walked(f));
+  if (byId) return byId;
+  const dot = key.indexOf(".");
+  const table = dot > 0 ? schema.tables.find(t => t.name.toLowerCase() === key.slice(0, dot).toLowerCase()) : undefined;
+  const f = table && fieldsOf(schema, table.id).find(x => walked(x) && x.name.toLowerCase() === key.slice(dot + 1).toLowerCase());
+  if (!f) throw new HttpError(422, `Unknown link field "${key}". Use "Table.Field" or a field id`);
+  return f;
 }
 
 const LANE_TYPES = new Set(["singleSelect", "user", "link"]);

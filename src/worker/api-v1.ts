@@ -80,6 +80,19 @@ apiV1.get("/:base/:table/:record", async c => {
   return c.json(toRecord(rows[0], x.fields, x.members, x.origin, x.byId));
 });
 
+// How a record reaches one of its path lookup results: the chain of linked records, start first.
+apiV1.get("/:base/:table/:record/paths", async c => {
+  const x = await ctx(c as AppContext, false);
+  const f = resolveField(x.fields, c.req.query("fieldId") ?? c.req.query("field") ?? "");
+  if (!f || f.type !== "pathLookup") throw new HttpError(422, "Pass fieldId: a path lookup field of this table");
+  const target = Number(c.req.query("target"));
+  if (!Number.isInteger(target)) throw new HttpError(422, "Pass target: the id of a record in the field's results");
+  const path = unwrap(await x.a.stub.explainPath(f.id, Number(c.req.param("record")), target));
+  if (!path) throw new HttpError(404, "That record is not among this record's results");
+  const fields = new Map(x.schema.fields.map(ff => [ff.id, ff]));
+  return c.json({ path: path.map(h => ({ table: h.tableId, id: h.id, title: h.t, ...(h.fieldId ? { via: x.byId ? h.fieldId : fields.get(h.fieldId)?.name ?? h.fieldId } : {}), ...(h.fieldId && fields.get(h.fieldId)?.type !== "link" ? { match: true } : {}) })) });
+});
+
 apiV1.post("/:base/:table", async c => {
   const x = await ctx(c as AppContext, true);
   const b = await json<{ records?: { fields: Record<string, unknown> }[]; fields?: Record<string, unknown>; typecast?: boolean }>(c as AppContext);

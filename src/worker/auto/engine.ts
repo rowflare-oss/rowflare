@@ -1,6 +1,6 @@
 // Runs automations from the base's alarm: due schedules and date triggers become runs,
 // queued runs and retries execute within a time budget, and runs cut off by an eviction resume.
-import type { BaseStore, MutationResult, WrittenRow } from "../base/store";
+import { UserError, type BaseStore, type MutationResult, type WrittenRow } from "../base/store";
 import { LIMITS, runLimit, type DateTrigger } from "../../shared/automations";
 import { dateDue, dueDayWindow, nextScheduleTime } from "../../shared/schedule";
 import { NEVER, STALE_AFTER, STALE_MARGIN, type AutomationRepo, type RunQuota, type RunRecord } from "./repo";
@@ -108,7 +108,15 @@ export class AutomationEngine {
           const at = dateDue(v.value, t);
           if (at !== null && at > from && at <= now) due.push(v.id);
         }
-        for (const id of store.matchRows(t.tableId, t.conditions, due)) repo.enqueue(a, { type: "dateReached", tableId: t.tableId, recordId: id, at: now }, [a.id], now, limit);
+        let matched: number[] = [];
+        try {
+          matched = store.matchRows(t.tableId, t.conditions, due);
+        } catch (e) {
+          // Conditions that cannot be answered (a field turned into a path lookup after the trigger was saved) skip this
+          // window instead of stopping the alarm for every automation of the base.
+          if (!(e instanceof UserError)) throw e;
+        }
+        for (const id of matched) repo.enqueue(a, { type: "dateReached", tableId: t.tableId, recordId: id, at: now }, [a.id], now, limit);
       }
       repo.setTimer(a.id, this.nextDue(t, now) ?? NEVER, now);
     }

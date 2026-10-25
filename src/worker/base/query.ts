@@ -26,7 +26,15 @@ function isArrayField(f: Field): boolean {
   return false;
 }
 
-export type FilterKind = "text" | "number" | "date" | "time" | "bool" | "select" | "array";
+export type FilterKind = "text" | "number" | "date" | "time" | "bool" | "select" | "array" | "path";
+
+/** What filters need beyond the row itself. */
+export interface FilterContext {
+  /** Ids of source records whose path lookup is not empty. */
+  pathIds(f: Field): number[];
+  /** Fails the whole query: a condition that cannot be answered must not be dropped, or the result would be wrong. */
+  refuse(message: string): never;
+}
 
 /** How a field is compared in filters; the MCP layer uses it to reject ops that conditionSql would ignore. */
 export function filterKind(f: Field): FilterKind {
@@ -43,6 +51,8 @@ export function filterKind(f: Field): FilterKind {
       return "bool";
     case "singleSelect":
       return "select";
+    case "pathLookup":
+      return "path";
     case "formula":
     case "rollup":
       if (f.options.resultType === "number") return "number";
@@ -61,7 +71,14 @@ function list(v: unknown): unknown[] {
   return [v];
 }
 
-function conditionSql(f: Field, c: Condition): SqlPart | null {
+function conditionSql(f: Field, c: Condition, ctx?: FilterContext): SqlPart | null {
+  // Path lookups are not in the row; only emptiness can be tested, against ids computed by the store.
+  if (f.type === "pathLookup") {
+    const why = `"${f.name}" is a path lookup; filter it with "is empty" or "is not empty"`;
+    if (!ctx) throw new Error(why);
+    if (c.op !== "empty" && c.op !== "notempty") ctx.refuse(why);
+    return { sql: `id ${c.op === "empty" ? "NOT IN" : "IN"} (SELECT value FROM json_each(?))`, params: [JSON.stringify(ctx.pathIds(f))] };
+  }
   const e = valueExpr(f);
   const k = filterKind(f);
   const v = c.value;
@@ -146,13 +163,13 @@ function conditionSql(f: Field, c: Condition): SqlPart | null {
   }
 }
 
-export function filterSql(spec: FilterSpec | undefined, fields: Map<string, Field>): SqlPart | null {
+export function filterSql(spec: FilterSpec | undefined, fields: Map<string, Field>, ctx?: FilterContext): SqlPart | null {
   if (!spec || !spec.conditions?.length) return null;
   const parts: SqlPart[] = [];
   for (const c of spec.conditions) {
     const f = fields.get(c.fieldId);
     if (!f) continue;
-    const p = conditionSql(f, c);
+    const p = conditionSql(f, c, ctx);
     if (p) parts.push(p);
   }
   if (!parts.length) return null;

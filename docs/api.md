@@ -69,6 +69,22 @@ curl -G -H "Authorization: Bearer $ROWFLARE_TOKEN" \
 
 `GET /api/v1/{baseId}/{table}/{recordId}`
 
+### Explain a path lookup result
+
+`GET /api/v1/{baseId}/{table}/{recordId}/paths?fieldId={field}&target={targetRecordId}` returns one shortest chain of linked records from the record to `target`, which must be among the record's values in the path lookup field `field` (id or name). Each hop after the first names the link field it went through (`via`):
+
+```json
+{ "path": [
+  { "table": "tblEmails", "id": 1, "title": "alice@x.com" },
+  { "table": "tblGitHub", "id": 4, "title": "alice-dev", "via": "GitHub" },
+  { "table": "tblAccounts", "id": 9, "title": "alice123", "via": "Accounts" }
+] }
+```
+
+A hop reached through a value match (a text field set to match a field of another table) also has `"match": true`, and `via` names the matching field.
+
+404 when `target` is not among the record's results.
+
 ### Create records
 
 `POST /api/v1/{baseId}/{table}` with up to 1,000 records:
@@ -101,8 +117,13 @@ A body of `{ "fields": {...} }` creates one record and returns it directly.
 | Attachment | array of `{ id, filename, size, type, url }` | upload in the app; the API does not accept files yet |
 | User | `{ id, email, name }` (array when multiple) | user id or email of a workspace member |
 | Lookup, rollup, formula, created time, last modified time, autonumber | computed value | read-only: writing returns 422 |
+| Path lookup | array of record ids of its target table, at most 100, sorted by id | read-only: writing returns 422 |
 
 Empty cells are omitted from `fields`, as in Airtable.
+
+Path lookup fields are computed when records are read, so formulas (`filterByFormula` included), lookups, rollups and sorts cannot use them. A cell lists at most 100 records; when it holds more, or a limit cut the search short, the record carries `"paths": { "<field>": { "total": 250 } }` (with `"incomplete": true` for a cut search). To list the records whose path lookup is empty or not empty, use a view filtered by "is empty" or "is not empty" (`view=`), or `query_records` over MCP.
+
+A text, email, URL or phone field set to match a field of another table keeps its own value as a string. Records that have one carry the ids of the other table's records with the same value (compared without case or surrounding spaces), at most 100: `"matches": { "<field>": [12, 40] }`. Fields with no matching record are left out.
 
 ## Automations
 

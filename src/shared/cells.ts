@@ -256,6 +256,7 @@ export function formulaValue(field: Field, v: unknown, ctx: DisplayContext = {})
     case "multiSelect":
       return (Array.isArray(v) ? v : []).map(id => field.options.choices?.find(c => c.id === id)?.name ?? null).filter((x): x is string => x !== null);
     case "link":
+    case "pathLookup":
       return (Array.isArray(v) ? v : []).map(x => String((x as LinkValue).t ?? ""));
     case "attachment":
       return (Array.isArray(v) ? v : []).map(x => String((x as Attachment).name ?? ""));

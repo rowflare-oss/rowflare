@@ -23,7 +23,8 @@ export type FieldType =
   | "modifiedTime"
   | "user"
   | "autonumber"
-  | "button";
+  | "button"
+  | "pathLookup";
 
 export const FIELD_TYPES: { type: FieldType; label: string }[] = [
   { type: "text", label: "Single line text" },
@@ -36,6 +37,7 @@ export const FIELD_TYPES: { type: FieldType; label: string }[] = [
   { type: "attachment", label: "Attachment" },
   { type: "link", label: "Link to another record" },
   { type: "lookup", label: "Lookup" },
+  { type: "pathLookup", label: "Path lookup" },
   { type: "rollup", label: "Rollup" },
   { type: "formula", label: "Formula" },
   { type: "user", label: "User" },
@@ -49,7 +51,7 @@ export const FIELD_TYPES: { type: FieldType; label: string }[] = [
 ];
 
 /** Field types whose value is computed by the server and cannot be written. */
-export const COMPUTED_TYPES: ReadonlySet<FieldType> = new Set(["lookup", "rollup", "formula", "createdTime", "modifiedTime", "autonumber", "button"]);
+export const COMPUTED_TYPES: ReadonlySet<FieldType> = new Set(["lookup", "rollup", "formula", "createdTime", "modifiedTime", "autonumber", "button", "pathLookup"]);
 
 export interface Choice {
   id: string;
@@ -75,10 +77,25 @@ export interface FieldOptions {
   inverseFieldId?: string;
   linkTable?: string;
   linkSide?: "a" | "b";
+  /** Records on this side depend on the linked records; defaults to true on the side the link was created from ("a"). */
+  dependsOn?: boolean;
+  /** "none" keeps the link out of path lookups. Both sides always carry the same value. */
+  pathRole?: "dependency" | "none";
   // lookup / rollup
   linkFieldId?: string;
   targetFieldId?: string;
   fn?: RollupFn;
+  // path lookup
+  targetTableId?: string;
+  pathDirection?: PathDirection;
+  /** Link fields (either side of a pair) the paths must not use; links added later are used automatically. */
+  excludeLinkFieldIds?: string[];
+  /** Only target records matching this filter count. */
+  targetFilter?: FilterSpec;
+  maxDepth?: number;
+  // text, email, URL, phone
+  /** Values of this field name records of another field's table; see src/shared/matches.ts. */
+  match?: MatchOptions;
   // formula
   formula?: string;
   resultType?: "number" | "text" | "date" | "boolean" | "array";
@@ -87,6 +104,18 @@ export interface FieldOptions {
   // AI (text, long text, selects, number, date, checkbox)
   ai?: AiConfig;
 }
+
+export interface MatchOptions {
+  /** The field whose values this field's values are compared with. */
+  fieldId: string;
+  /** Records of this field's table depend on the records they match; defaults to true. */
+  dependsOn?: boolean;
+  /** "none" keeps the match out of path lookups. */
+  pathRole?: "dependency" | "none";
+}
+
+/** "dependents": records that depend on this one, directly or through others; "dependencies": the reverse. */
+export type PathDirection = "dependents" | "dependencies";
 
 export interface Field {
   id: string;
@@ -266,6 +295,15 @@ export interface Row {
   cells: Cells;
   /** States of AI cells that are not plainly done. */
   ai?: Record<string, AiCellState>;
+  /** Path lookup cells that hold only part of their records: the full count, and whether a limit cut the search short. */
+  paths?: Record<string, PathCellInfo>;
+  /** Records of another table whose value equals this row's value in a field set to match it, at most 100 per field. */
+  matches?: Record<string, LinkValue[]>;
+}
+
+export interface PathCellInfo {
+  total: number;
+  incomplete?: boolean;
 }
 
 export interface Attachment {
@@ -295,7 +333,8 @@ export type ServerMessage =
   | { type: "rows"; tableId: string; rows: Row[]; by?: string; clientId?: string }
   | { type: "deleted"; tableId: string; ids: number[]; by?: string; clientId?: string }
   | { type: "schema"; schema: Schema; clientId?: string }
-  | { type: "reload"; tableId: string }
+  /** keep: only path lookup values may have changed; refresh rows without dropping the ones on screen. */
+  | { type: "reload"; tableId: string; keep?: boolean }
   | { type: "presence"; users: Presence[] }
   | { type: "cursor"; user: Presence }
   | { type: "jobs"; jobs: JobInfo[] }

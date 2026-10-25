@@ -70,6 +70,7 @@ export function validateAggregate(fields: Map<string, Field>, input: AggregateIn
   for (const g of input.groupBy ?? []) {
     const f = fields.get(g.fieldId);
     if (!f) return `Unknown group field ${g.fieldId}`;
+    if (f.type === "pathLookup") return `Path lookup fields cannot be grouped; "${f.name}" is one`;
     if (g.bucket !== undefined && !isDateLike(f)) return `A date bucket needs a date field; "${f.name}" is ${f.type}`;
   }
   if (input.tz !== undefined && !isValidTimeZone(input.tz)) return `Unknown time zone ${String(input.tz)}`;
@@ -89,6 +90,7 @@ export function validateAggregate(fields: Map<string, Field>, input: AggregateIn
     if (m.fn === "count") continue;
     const f = m.fieldId ? fields.get(m.fieldId) : undefined;
     if (!f) return `Metric ${m.fn} needs a field`;
+    if (f.type === "pathLookup") return `Path lookup fields cannot be summarized; "${f.name}" is one`;
     if ((m.fn === "sum" || m.fn === "avg") && !isNumeric(f)) return `${m.fn} needs a number field; "${f.name}" is ${f.type}`;
     if ((m.fn === "min" || m.fn === "max") && !isNumeric(f) && !isDateLike(f)) return `${m.fn} needs a number or date field; "${f.name}" is ${f.type}`;
   }
