@@ -1,0 +1,82 @@
+# Publishes the Helm chart in deploy/helm/rowflare to a Helm repository on GitHub Pages
+# (https://rowflare.github.io/rowflare) with chart-releaser, whenever the chart version changes on main.
+#
+# One-time setup:
+#   1. Create an empty gh-pages branch (see deploy/helm/RELEASING.md) and enable GitHub Pages from it.
+#   2. Allow GitHub Actions to create releases: Settings, Actions, General, Workflow permissions, Read and write.
+# chart-releaser creates a GitHub release named rowflare-<chart version> holding the packaged chart.
+name: Release Helm chart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - deploy/helm/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: helm-release
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - name: Lint
+        run: |
+          helm lint deploy/helm/rowflare --strict
+          helm lint deploy/helm/rowflare --strict -f deploy/helm/rowflare/ci/ingress-values.yaml
+      - name: Validate rendered manifests
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          helm template rowflare deploy/helm/rowflare | ./kubeconform -strict -summary
+          helm template rowflare deploy/helm/rowflare -f deploy/helm/rowflare/ci/ingress-values.yaml | ./kubeconform -strict -summary
+
+  release:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: deploy/helm
+          # Keep the app's own release (v0.1.0 and later) as the repository's latest release.
+          mark_as_latest: false
+          skip_existing: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Artifact Hub metadata
+        run: |
+          git fetch origin gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          cp deploy/helm/artifacthub-repo.yml /tmp/gh-pages/artifacthub-repo.yml
+          cd /tmp/gh-pages
+          git add artifacthub-repo.yml
+          if git diff --cached --quiet; then
+            echo "artifacthub-repo.yml unchanged"
+          else
+            git commit -m "Update Artifact Hub metadata"
+            git push origin gh-pages
+          fi
