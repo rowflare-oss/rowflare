@@ -5,7 +5,7 @@
 ## Install
 
 ```sh
-helm repo add rowflare https://rowflare.github.io/rowflare
+helm repo add rowflare https://rowflare-oss.github.io/rowflare
 helm repo update
 helm install rowflare rowflare/rowflare \
   --namespace rowflare --create-namespace \
@@ -46,7 +46,7 @@ Open the URL and sign up right away: the first account becomes the owner, and ev
 | `ingress.*` | disabled | Standard Ingress settings |
 | `resources` | 100m CPU, 256Mi to 1Gi memory | Requests and limits |
 
-All settings Rowflare reads are listed in [docs/self-hosting.md](https://github.com/rowflare/rowflare/blob/main/docs/self-hosting.md).
+All settings Rowflare reads are listed in [docs/self-hosting.md](https://github.com/rowflare-oss/rowflare/blob/main/docs/self-hosting.md).
 
 ## Backups
 

@@ -2,13 +2,13 @@ apiVersion: v2
 name: rowflare
 description: Rowflare, an open-source Airtable alternative. Runs the Rowflare Docker image with a persistent volume for its data.
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 kubeVersion: ">=1.23.0-0"
 home: https://rowflare.com
 icon: https://rowflare.com/favicon.svg
 sources:
-  - https://github.com/rowflare/rowflare
+  - https://github.com/rowflare-oss/rowflare
 keywords:
   - airtable
   - airtable-alternative
@@ -32,9 +32,9 @@ annotations:
         - linux/arm64
   artifacthub.io/links: |
     - name: Documentation
-      url: https://github.com/rowflare/rowflare/blob/main/docs/self-hosting.md
+      url: https://github.com/rowflare-oss/rowflare/blob/main/docs/self-hosting.md
     - name: REST API
-      url: https://github.com/rowflare/rowflare/blob/main/docs/api.md
+      url: https://github.com/rowflare-oss/rowflare/blob/main/docs/api.md
   artifacthub.io/changes: |
-    - kind: added
-      description: First release of the chart, for Rowflare 0.1.0
+    - kind: changed
+      description: Links point to the new repository, github.com/rowflare-oss/rowflare

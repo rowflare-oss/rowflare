@@ -2,7 +2,7 @@
 
 An open-source, Airtable-style database that runs on your own Cloudflare account. One base is one SQLite-backed Durable Object. Pay Cloudflare $5/month for the whole team instead of $20 or more per seat.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/rowflare/rowflare)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/rowflare-oss/rowflare)
 
 [Rowflare Cloud](https://app.rowflare.com) · [Website](https://rowflare.com) · [Docs](docs/) · [REST API](docs/api.md) · [MCP](docs/mcp.md)
 
@@ -36,7 +36,7 @@ You need a Cloudflare account on the **Workers Paid plan ($5/month)**. The free 
 **From the command line:**
 
 ```sh
-git clone https://github.com/rowflare/rowflare.git
+git clone https://github.com/rowflare-oss/rowflare.git
 cd rowflare
 npm install
 npx wrangler login
@@ -46,7 +46,7 @@ npm run deploy
 **With Docker, on any server:** no Cloudflare account needed. The image runs the same Worker code in workerd, Cloudflare's open-source Workers runtime, with Durable Objects, D1 and R2 stored as local files in `/data`.
 
 ```sh
-docker run -d --name rowflare -p 8787:8787 -v rowflare-data:/data ghcr.io/rowflare/rowflare:latest
+docker run -d --name rowflare -p 8787:8787 -v rowflare-data:/data ghcr.io/rowflare-oss/rowflare:latest
 ```
 
 Or use the [`docker-compose.yml`](docker-compose.yml) in this repository: `docker compose up -d`.

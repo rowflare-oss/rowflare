@@ -1,5 +1,5 @@
 # Publishes the Helm chart in deploy/helm/rowflare to a Helm repository on GitHub Pages
-# (https://rowflare.github.io/rowflare) with chart-releaser, whenever the chart version changes on main.
+# (https://rowflare-oss.github.io/rowflare) with chart-releaser, whenever the chart version changes on main.
 #
 # One-time setup:
 #   1. Create an empty gh-pages branch (see deploy/helm/RELEASING.md) and enable GitHub Pages from it.

@@ -1,6 +1,6 @@
 services:
   rowflare:
-    image: ghcr.io/rowflare/rowflare:latest
+    image: ghcr.io/rowflare-oss/rowflare:latest
     # To build from this checkout instead of pulling: docker compose up --build
     build: .
     restart: unless-stopped

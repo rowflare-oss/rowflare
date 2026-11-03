@@ -21,7 +21,7 @@ The Paid plan includes 25 billion rows read per month.
 
 ## One-click deploy
 
-1. Open the deploy link: <https://deploy.workers.cloudflare.com/?url=https://github.com/rowflare/rowflare>
+1. Open the deploy link: <https://deploy.workers.cloudflare.com/?url=https://github.com/rowflare-oss/rowflare>
 2. Sign in to Cloudflare. Cloudflare copies the repository into your GitHub or GitLab account and builds it.
 3. Confirm the proposed resource names (the defaults are fine).
 4. Open the URL shown when the deploy finishes, for example `https://rowflare.your-subdomain.workers.dev`.
@@ -94,7 +94,7 @@ The binding is left out of the default configuration because `wrangler dev` and 
 ## Manual deploy
 
 ```sh
-git clone https://github.com/rowflare/rowflare.git
+git clone https://github.com/rowflare-oss/rowflare.git
 cd rowflare
 npm install
 npx wrangler login
@@ -112,7 +112,7 @@ docker run -d --name rowflare \
   -p 8787:8787 \
   -v rowflare-data:/data \
   -e APP_URL=https://rowflare.example.com \
-  ghcr.io/rowflare/rowflare:latest
+  ghcr.io/rowflare-oss/rowflare:latest
 ```
 
 The same image is on Docker Hub as `rowflare/rowflare`.
