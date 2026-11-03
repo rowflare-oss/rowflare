@@ -159,4 +159,4 @@ Still to measure on production: cold start after eviction, queueing when many us
 
 - Designed for up to 50,000 rows per base (Airtable Team) with 125,000 rows supported (Airtable Business); ad hoc filters on 125,000 rows take roughly 0.4 to 0.8 s.
 - A Durable Object holds up to 10 GB; attachments are stored in R2, not in the base.
-- The Workers Paid plan is required: the free plan's 10 ms CPU per request and 5 million SQLite rows read per day are exhausted by about 100 filters a day on a 50,000-row base.
+- The Workers Free plan runs Rowflare for $0, but its 10 ms CPU per request and 5 million SQLite rows read per day are exhausted by about 100 filters a day on a 50,000-row base, so the Workers Paid plan is recommended for a team.

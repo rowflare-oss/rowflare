@@ -29,7 +29,7 @@ Not in scope: interfaces and app builders, an AI chat assistant inside the app, 
 
 ## Self-hosting
 
-You need a Cloudflare account on the **Workers Paid plan ($5/month)**. The free plan allows 10 ms of CPU per request and 5 million SQLite rows read per day, which a 50,000-row base exhausts with about 100 filters a day.
+It deploys on the Cloudflare **Workers Free plan for $0**, which is enough to try it and for small bases. For a team we recommend the **Workers Paid plan ($5/month)**: the free plan allows 10 ms of CPU per request and 5 million SQLite rows read per day, which a 50,000-row base exhausts with about 100 filters a day.
 
 **One click:** use the Deploy button above. Cloudflare forks this repository into your GitHub or GitLab account and creates the Worker, the Durable Object namespace, a D1 database, an R2 bucket and an hourly cron. Open the deployed URL and sign up: the first account becomes the owner, everyone else joins by invite.
 

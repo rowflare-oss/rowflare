@@ -8,14 +8,14 @@ Rowflare runs entirely inside your own Cloudflare account. Each base is one SQLi
 
 If you would rather run it on your own server, use the [Docker image](#docker) instead. It needs no Cloudflare account.
 
-## Requirement: Workers Paid plan ($5/month)
+## Cloudflare plan: Free to start, Workers Paid ($5/month) for a team
 
-On Cloudflare, Rowflare needs the Workers Paid plan, which costs $5/month per Cloudflare account and covers the whole team, with unlimited users.
+Rowflare deploys on the Cloudflare Workers Free plan for $0, which is enough to try it and for small bases. For a team we recommend the Workers Paid plan, which costs $5/month per Cloudflare account and covers the whole team, with unlimited users.
 
-The free plan is not enough for a real team:
+Limits of the Free plan:
 
 - It allows 10 ms of CPU per request. A filter or sort on a 50,000-row base takes 74-80 ms inside the Durable Object.
-- It allows 5 million SQLite rows read per day. One filter on a 50,000-row base reads 50,000 rows, so roughly 100 filters a day use up the quota.
+- It allows 5 million SQLite rows read and 100,000 rows written per day. One filter on a 50,000-row base reads 50,000 rows, so roughly 100 filters a day use up the quota. Above a daily limit, requests fail until 00:00 UTC; nothing is billed.
 
 The Paid plan includes 25 billion rows read per month.
 

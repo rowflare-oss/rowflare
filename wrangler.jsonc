@@ -19,7 +19,5 @@
   "triggers": { "crons": ["17 * * * *"] },
   // MODE: "selfhost" (first user owns the instance, invite-only after that) or "cloud" (open signup + billing).
   "vars": { "MODE": "selfhost", "ALLOW_SIGNUP": "false" },
-  // Durable Objects need the Workers Paid plan; long batch jobs use up to 5 minutes of CPU.
-  "limits": { "cpu_ms": 300000 },
   "observability": { "enabled": true }
 }
