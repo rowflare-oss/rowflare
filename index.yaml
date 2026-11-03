@@ -4,6 +4,51 @@ entries:
   - annotations:
       artifacthub.io/category: database
       artifacthub.io/changes: |
+        - kind: changed
+          description: Links point to the new repository, github.com/rowflare-oss/rowflare
+      artifacthub.io/images: |
+        - name: rowflare
+          image: docker.io/rowflare/rowflare:0.1.0@sha256:9767136d308a6abe5a59ceb443729168c375cdad48f4c2db4bddaad0f192a1fc
+          platforms:
+            - linux/amd64
+            - linux/arm64
+      artifacthub.io/license: AGPL-3.0-only
+      artifacthub.io/links: |
+        - name: Documentation
+          url: https://github.com/rowflare-oss/rowflare/blob/main/docs/self-hosting.md
+        - name: REST API
+          url: https://github.com/rowflare-oss/rowflare/blob/main/docs/api.md
+      artifacthub.io/prerelease: "false"
+    apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-11-03T04:03:52.98740909Z"
+    description: Rowflare, an open-source Airtable alternative. Runs the Rowflare
+      Docker image with a persistent volume for its data.
+    digest: d9352bb65395dfe9d70e81c1359476935d4fce89eb8644ccc4bd32164055b2d3
+    home: https://rowflare.com
+    icon: https://rowflare.com/favicon.svg
+    keywords:
+    - airtable
+    - airtable-alternative
+    - spreadsheet
+    - database
+    - no-code
+    - self-hosted
+    kubeVersion: '>=1.23.0-0'
+    maintainers:
+    - email: hello@rowflare.com
+      name: Rowflare
+      url: https://rowflare.com
+    name: rowflare
+    sources:
+    - https://github.com/rowflare-oss/rowflare
+    type: application
+    urls:
+    - https://github.com/rowflare-oss/rowflare/releases/download/rowflare-0.1.1/rowflare-0.1.1.tgz
+    version: 0.1.1
+  - annotations:
+      artifacthub.io/category: database
+      artifacthub.io/changes: |
         - kind: added
           description: First release of the chart, for Rowflare 0.1.0
       artifacthub.io/images: |
@@ -46,4 +91,4 @@ entries:
     urls:
     - https://github.com/rowflare-oss/rowflare/releases/download/rowflare-0.1.0/rowflare-0.1.0.tgz
     version: 0.1.0
-generated: "2026-11-03T03:58:34.098380155Z"
+generated: "2026-11-03T04:03:52.987416875Z"
