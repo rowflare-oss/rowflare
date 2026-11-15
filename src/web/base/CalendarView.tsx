@@ -45,7 +45,7 @@ export default function CalendarView(props: Props) {
   const view = props.client.view(props.view.id) ?? props.view;
   const options = dateFields(props.client, view.tableId);
   const start = options.find(f => f.id === view.config.dateFieldId);
-  if (!start) return <DateSetup client={props.client} view={view} icon="calendar" title="Show records on a calendar" text="Choose the date field that places each record on the calendar." />;
+  if (!start) return <DateSetup client={props.client} view={view} icon="calendar" title="Show records on a calendar" text="Choose the date field that places each record on the calendar." need="A calendar places each record on the day in a date field, so it needs one." />;
   return <CalendarBody {...props} view={view} start={start} end={options.find(f => f.id === view.config.endDateFieldId && f.id !== start.id)} options={options} />;
 }
 

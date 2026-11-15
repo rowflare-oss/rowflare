@@ -112,7 +112,7 @@ function projectTracker(): TplTable[] {
 function crm(): TplTable[] {
   const r = rng(11);
   const pick = <T>(a: T[]) => a[Math.floor(r() * a.length)];
-  const companies = ["Northwind Traders", "Globex", "Initech", "Umbrella Health", "Stark Logistics", "Wayne Studios", "Acme Robotics", "Hooli Cloud", "Soylent Foods", "Vandelay Imports", "Massive Dynamic", "Cyberdyne Labs"];
+  const companies = ["Northwind Traders", "Globex", "Initech", "Umbrella Health", "Stark Logistics", "Wayne Studios", "Acme Robotics", "Hooli Cloud"];
   const first = ["Olivia", "James", "Emma", "Lucas", "Mia", "Henry", "Zoe", "Leo", "Chloe", "Jack", "Aria", "Owen"];
   const last = ["Garcia", "Smith", "Nguyen", "Muller", "Silva", "Johnson", "Okafor", "Larsen", "Kowalski", "Tanaka"];
   return [
@@ -143,7 +143,7 @@ function crm(): TplTable[] {
         { name: "Company", type: "link", link: "Companies", inverse: "Contacts" },
         { name: "Industry", type: "lookup", lookup: ["Company", "Industry"] },
       ],
-      rows: Array.from({ length: 36 }, (_, i) => {
+      rows: Array.from({ length: 16 }, (_, i) => {
         const name = `${first[i % first.length]} ${pick(last)}`;
         const company = companies[i % companies.length];
         return {
@@ -166,7 +166,7 @@ function crm(): TplTable[] {
         { name: "Probability", type: "formula", formula: 'SWITCH({Stage}, "Lead", 0.1, "Qualified", 0.25, "Proposal", 0.5, "Negotiation", 0.75, "Won", 1, 0)', format: "percent" },
         { name: "Weighted", type: "formula", formula: "ROUND({Amount} * {Probability})", format: "currency", precision: 0 },
       ],
-      rows: Array.from({ length: 30 }, (_, i) => ({
+      rows: Array.from({ length: 16 }, (_, i) => ({
         Name: `${pick(["Annual plan", "Pilot", "Expansion", "Renewal", "Enterprise upgrade"])} - ${companies[i % companies.length]}`,
         Company: [companies[i % companies.length]],
         Stage: pick(["Lead", "Qualified", "Proposal", "Negotiation", "Won", "Lost"]),

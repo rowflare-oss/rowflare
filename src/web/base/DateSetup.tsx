@@ -8,7 +8,7 @@ import type { BaseClient } from "./client";
 
 export const dateFields = (client: BaseClient, tableId: string): Field[] => client.fields(tableId).filter(isDateField);
 
-export function DateSetup({ client, view, icon, title, text }: { client: BaseClient; view: View; icon: string; title: string; text: string }) {
+export function DateSetup({ client, view, icon, title, text, need }: { client: BaseClient; view: View; icon: string; title: string; text: string; need: string }) {
   const options = dateFields(client, view.tableId);
   const [busy, setBusy] = useState(false);
   const stale = !!view.config.dateFieldId;
@@ -39,8 +39,15 @@ export function DateSetup({ client, view, icon, title, text }: { client: BaseCli
           </>
         ) : (
           <>
-            <p className="muted">This table has no date field yet.</p>
-            {client.writable && <Button variant="primary" icon="plus" disabled={busy} onClick={create}>Add a Date field</Button>}
+            <p className="muted">This table has no date field yet. {need}</p>
+            {client.writable ? (
+              <>
+                <Button variant="primary" icon="plus" disabled={busy} onClick={create}>Add a Date field</Button>
+                <p className="muted small">Adds an empty Date field to this table and uses it for this view. Fill in dates in any view to see records here.</p>
+              </>
+            ) : (
+              <p className="muted small">Ask an editor of this base to add a date field.</p>
+            )}
           </>
         )}
       </div>

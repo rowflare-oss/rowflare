@@ -40,7 +40,7 @@ describe("HTTP API", () => {
     expect(base.json.schema.tables.map((t: any) => t.name)).toEqual(["Companies", "Contacts", "Deals"]);
     const deals = base.json.schema.tables.find((t: any) => t.name === "Deals");
     const q = await c.req("POST", `/api/bases/${baseId}/query`, { tableId: deals.id, limit: 5 });
-    expect(q.json.ids.length).toBe(30);
+    expect(q.json.ids.length).toBe(16);
     expect(q.json.rows).toHaveLength(5);
     const amount = base.json.schema.fields.find((f: any) => f.tableId === deals.id && f.name === "Amount");
     const upd = await c.req("POST", `/api/bases/${baseId}/rows`, { op: "update", tableId: deals.id, updates: [{ id: q.json.ids[0], cells: { [amount.id]: 12345 } }] });
@@ -51,7 +51,7 @@ describe("HTTP API", () => {
 
     const csv = await SELF.fetch(`https://app.test/api/bases/${baseId}/export.csv?tableId=${deals.id}`, { headers: { Cookie: c.cookie } });
     const text = await csv.text();
-    expect(text.split("\r\n")).toHaveLength(31);
+    expect(text.split("\r\n")).toHaveLength(17);
     expect(text).toContain("12,345");
   });
 
@@ -121,8 +121,8 @@ describe("HTTP API", () => {
     const stage = schema.fields.find((f: any) => f.tableId === deals.id && f.name === "Stage");
     const r = await c.req("POST", `/api/bases/${baseId}/aggregate`, { tableId: deals.id, groupBy: [{ fieldId: stage.id }], fanOut: false, metrics: [{ fn: "count", as: "n" }] });
     expect(r.status).toBe(200);
-    expect(r.json.total).toBe(30);
-    expect(r.json.groups.reduce((n: number, g: any) => n + g.values.n, 0)).toBe(30);
+    expect(r.json.total).toBe(16);
+    expect(r.json.groups.reduce((n: number, g: any) => n + g.values.n, 0)).toBe(16);
     const bad = await c.req("POST", `/api/bases/${baseId}/aggregate`, { tableId: deals.id, metrics: [] });
     expect(bad.status).toBe(400);
   });

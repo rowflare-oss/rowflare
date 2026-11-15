@@ -54,7 +54,7 @@ describe("MCP read tools", () => {
     const d = await call(client, "describe_base", { baseId });
     const deals = d.structuredContent.tables.find((t: any) => t.name === "Deals");
     expect(deals.primaryField).toBe("Name");
-    expect(deals.rowCount).toBe(30);
+    expect(deals.rowCount).toBe(16);
     const byName = (n: string) => deals.fields.find((f: any) => f.name === n);
     expect(byName("Stage").options.choices).toEqual(["Lead", "Qualified", "Proposal", "Negotiation", "Won", "Lost"]);
     expect(byName("Company").options.linkedTable).toBe("Companies");
@@ -76,7 +76,7 @@ describe("MCP record queries", () => {
     const { token, baseId } = await ownerWithBase("mcp-query");
     const client = await mcpClient(token);
     const all = await call(client, "query_records", { baseId, table: "Deals", limit: 200 });
-    expect(all.structuredContent.total).toBe(30);
+    expect(all.structuredContent.total).toBe(16);
     const won = all.structuredContent.records.filter((r: any) => r.fields.Stage === "Won").length;
 
     const r = await call(client, "query_records", { baseId, table: "deals", filter: { conditions: [{ field: "stage", op: "eq", value: "won" }] }, sort: [{ field: "Amount", direction: "desc" }], fields: ["Name", "Amount"] });
@@ -147,9 +147,9 @@ describe("MCP record queries", () => {
     const client = await mcpClient(token);
     const r = await call(client, "aggregate", { baseId, table: "Deals", groupBy: [{ field: "Stage" }], metrics: [{ fn: "count" }, { fn: "sum", field: "Amount" }] });
     expect(r.isError).toBeFalsy();
-    expect(r.structuredContent.total).toBe(30);
+    expect(r.structuredContent.total).toBe(16);
     const groups = r.structuredContent.groups;
-    expect(groups.reduce((n: number, g: any) => n + g.values.count, 0)).toBe(30);
+    expect(groups.reduce((n: number, g: any) => n + g.values.count, 0)).toBe(16);
     expect(Object.keys(groups[0].values)).toEqual(["count", "sum Amount"]);
     const bad = await call(client, "aggregate", { baseId, table: "Deals", metrics: [{ fn: "sum", field: "Stage" }] });
     expect((bad.content[0] as { text: string }).text).toBe('sum needs a number field; "Stage" is singleSelect');

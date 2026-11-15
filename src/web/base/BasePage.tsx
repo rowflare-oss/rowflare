@@ -197,6 +197,8 @@ function BaseShell({ client, tableId: tableParam, viewId: viewParam, dashboardId
     try {
       const res = await client.schemaOp({ op: "createView", tableId: table.id, view: { name: names[type], type } });
       if (res.id) go(table.id, res.id);
+      // On narrow screens the sidebar covers the view; close it so the new view is visible.
+      if (window.innerWidth <= 900) setSidebar(false);
     } catch (e) {
       toastError(e);
     }
@@ -363,6 +365,7 @@ function BaseShell({ client, tableId: tableParam, viewId: viewParam, dashboardId
         </div>
       ) : (
         <div className="base-body">
+          {sidebar && table && <div className="view-sidebar-backdrop" onClick={() => setSidebar(false)} aria-hidden="true" />}
           {sidebar && table && (
             <aside className="view-sidebar">
               <div className="sidebar-title">Views</div>

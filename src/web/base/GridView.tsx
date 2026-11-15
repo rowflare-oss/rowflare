@@ -26,7 +26,7 @@ import { buttonRenderer, chipsRenderer, DEFAULT_WIDTH, groupHeaderRenderer, HEAD
 import { runButtonField } from "../auto/button";
 import { AI_HEADER_ICONS, aiCell, aiRenderer } from "../ai/aiCell";
 import { buildRows, existingPaths, groupCells, headerLabel, summaryOptions, summaryText, SUMMARY_LABELS, type HeaderRow } from "./gridGroups";
-import { FieldValueEditor } from "./editors";
+import { cellText, FieldValueEditor } from "./editors";
 import { Icon, Menu, Popover, type MenuItem } from "../ui";
 import { matchProblem } from "../../shared/matches";
 import { toast, toastError } from "../toast";
@@ -59,12 +59,35 @@ const theme: Partial<Theme> = {
 
 let measure: CanvasRenderingContext2D | null | undefined;
 
-/** Width of a cell's text in the grid font, to tell a click on the text from one beside it. */
-function textWidth(text: string): number {
+/** Width of a text in the grid font (or the header font), to tell a click on the text from one beside it and to size columns. */
+function textWidth(text: string, font = `${theme.baseFontStyle} ${theme.fontFamily}`): number {
   if (measure === undefined) measure = document.createElement("canvas").getContext("2d");
   if (!measure) return Infinity;
-  measure.font = `${theme.baseFontStyle} ${theme.fontFamily}`;
+  measure.font = font;
   return measure.measureText(text).width;
+}
+
+const HEADER_FONT = `${theme.headerFontStyle} ${theme.fontFamily}`;
+/** Types whose cells are not plain text, so their width stays the type default. */
+const UNFITTED: ReadonlySet<Field["type"]> = new Set(["checkbox", "attachment", "longText", "button"]);
+const CHIP_TYPES: ReadonlySet<Field["type"]> = new Set(["singleSelect", "multiSelect", "link", "pathLookup", "user"]);
+const FIT_MIN = 80;
+const FIT_MAX = 260;
+/** Rows sampled to size a column. */
+const FIT_SAMPLE = 40;
+
+/**
+ * Width for a column the user never resized: wide enough for its header (type icon, name and menu
+ * button) and for the widest sampled value, so short columns like a SKU do not take a fixed 180px
+ * and headers are not cut off.
+ */
+function fitWidth(f: Field, texts: string[]): number {
+  const base = DEFAULT_WIDTH[f.type] ?? 180;
+  const header = textWidth(f.name, HEADER_FONT) + 66;
+  if (UNFITTED.has(f.type)) return Math.round(Math.min(FIT_MAX, Math.max(base, header)));
+  const pad = theme.cellHorizontalPadding! * 2 + 6;
+  const content = texts.reduce((w, t) => Math.max(w, textWidth(t) + pad + (CHIP_TYPES.has(f.type) && t ? 20 * (t.split(", ").length) : 0)), 0);
+  return Math.round(Math.min(FIT_MAX, Math.max(FIT_MIN, header, content)));
 }
 
 function loadCollapsed(viewId: string): Set<string> {
@@ -160,18 +183,36 @@ export default function GridView({ client, view, search, handlers }: { client: B
 
   const pathProblem = (f: Field): string | null => (f.type === "pathLookup" ? pathFieldProblem(f, client.schema.fields, new Set(client.schema.tables.map(t => t.id))) : null);
 
+  // Fitted widths are measured once per column from the first loaded rows, then kept, so columns
+  // do not jump while the user scrolls or edits.
+  const fitted = useRef(new Map<string, number>());
+  const sampleIds = rowIds.filter((x): x is number => x !== undefined).slice(0, FIT_SAMPLE);
+  const sampleReady = sampleIds.length ? sampleIds.every(id => client.row(tableId, id)) : !!state && !state.loading;
+  const widthOf = (f: Field): number => {
+    const saved = view.config.widths?.[f.id];
+    if (saved) return saved;
+    const key = `${view.id}:${f.id}:${f.name}`;
+    let w = fitted.current.get(key);
+    if (w === undefined) {
+      const texts = sampleIds.map(id => client.row(tableId, id)).map(r => (r ? cellText(f, rawValue(f, r), client.members) : ""));
+      w = fitWidth(f, texts);
+      if (sampleReady) fitted.current.set(key, w);
+    }
+    return w;
+  };
+
   const columns: GridColumn[] = useMemo(
     () =>
       fields.map(f => ({
         id: f.id,
         title: f.type === "pathLookup" && pathProblem(f) ? `${f.name} (broken)` : aiTitle(f, client.aiProgress.get(f.id), aiProblem(f)),
-        width: view.config.widths?.[f.id] ?? DEFAULT_WIDTH[f.type] ?? 180,
+        width: widthOf(f),
         icon: f.options.ai ? "ai" : HEADER_ICONS[f.type],
         hasMenu: true,
         themeOverride: COMPUTED_TYPES.has(f.type) ? { bgCell: "#fcfbfa" } : undefined,
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(fields.map(f => [f.id, f.name, f.type, f.options.ai ?? null])), JSON.stringify(view.config.widths ?? {}), JSON.stringify([...client.aiProgress.values()]), aiServices, client.schema.version],
+    [JSON.stringify(fields.map(f => [f.id, f.name, f.type, f.options.ai ?? null])), JSON.stringify(view.config.widths ?? {}), JSON.stringify([...client.aiProgress.values()]), aiServices, client.schema.version, sampleReady],
   );
 
   const headerCell = useCallback(

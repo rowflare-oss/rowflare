@@ -42,7 +42,7 @@ export default function TimelineView(props: Props) {
   const view = props.client.view(props.view.id) ?? props.view;
   const options = dateFields(props.client, view.tableId);
   const start = options.find(f => f.id === view.config.dateFieldId);
-  if (!start) return <DateSetup client={props.client} view={view} icon="timeline" title="Plan records on a timeline" text="Choose the date field where each bar starts." />;
+  if (!start) return <DateSetup client={props.client} view={view} icon="timeline" title="Plan records on a timeline" text="Choose the date field where each bar starts." need="A timeline draws each record as a bar from a date field, so it needs one." />;
   return <TimelineBody {...props} view={view} start={start} options={options} />;
 }
 

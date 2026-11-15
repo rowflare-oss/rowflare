@@ -21,7 +21,7 @@ describe("MCP dashboard tools", () => {
     const got = await call(client, "get_dashboard", { baseId, dashboard: "Pipeline" });
     const [metric, bar, note] = got.structuredContent.dashboard.widgets;
     expect(metric).toMatchObject({ type: "metric", table: "Deals", metric: { fn: "count" }, position: { x: 0, y: 0, w: 3, h: 2 } });
-    expect(metric.data.groups[0].values.v).toBe(30);
+    expect(metric.data.groups[0].values.v).toBe(16);
     expect(bar).toMatchObject({ x: "Stage", metric: { fn: "sum", field: "Amount" } });
     const agg = await call(client, "aggregate", { baseId, table: "Deals", groupBy: [{ field: "Stage" }], metrics: [{ fn: "sum", field: "Amount", as: "v" }] });
     expect(bar.data.groups).toEqual(agg.structuredContent.groups);

@@ -101,8 +101,15 @@ function GroupSetup({ client, view }: { client: BaseClient; view: View }) {
           </>
         ) : (
           <>
-            <p className="muted">This table has no single select field yet. A kanban board needs one to build its columns.</p>
-            {client.writable && <Button variant="primary" icon="plus" disabled={busy} onClick={createStatus}>Add a Status field</Button>}
+            <p className="muted">This table has no single select field yet. A kanban board makes one column per option of a single select field, so it needs one.</p>
+            {client.writable ? (
+              <>
+                <Button variant="primary" icon="plus" disabled={busy} onClick={createStatus}>Add a Status field</Button>
+                <p className="muted small">Adds a single select with Todo, In progress and Done and groups this board by it. Rename or add options any time.</p>
+              </>
+            ) : (
+              <p className="muted small">Ask an editor of this base to add a single select field.</p>
+            )}
           </>
         )}
       </div>
