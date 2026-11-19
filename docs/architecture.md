@@ -43,7 +43,7 @@ Column-wide work (a new or edited formula, lookup or rollup; a field type conver
 
 ## Formulas
 
-`src/shared/formula` is a dependency-free parser and evaluator for Airtable's formula language (89 functions), shared by the server and the browser (the field editor validates as you type). Formulas are stored with field ids (`{fldXXXX}`) and shown with names, so renaming a field never breaks a formula. HyperFormula was not used because of its GPL / commercial license.
+`src/shared/formula` is a dependency-free parser and evaluator for Airtable's formula language (81 functions), shared by the server and the browser (the field editor validates as you type). Formulas are stored with field ids (`{fldXXXX}`) and shown with names, so renaming a field never breaks a formula. HyperFormula was not used because of its GPL / commercial license.
 
 ## Aggregation
 
