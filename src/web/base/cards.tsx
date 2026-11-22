@@ -134,6 +134,19 @@ export function CardSettings({ client, view, anchor, onClose, exclude = [], chil
         <option value="">No cover</option>
         {attachments.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
       </select>
+      {view.type === "gallery" && coverField(client, view) && (
+        <div className="seg gal-cover-mode" role="group" aria-label="Cover image sizing">
+          {(["crop", "fit"] as const).map(mode => {
+            const active = (view.config.coverMode === "fit" ? "fit" : "crop") === mode;
+            return (
+              <button key={mode} type="button" className={"seg-btn" + (active ? " active" : "")} aria-pressed={active} disabled={ro}
+                onClick={() => client.updateViewConfig(view.id, { coverMode: mode })}>
+                {mode === "crop" ? "Crop" : "Fit"}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="kb-settings-head">
         <label className="field-label">Fields on cards</label>
         <span className="muted small">First {CARD_FIELDS} with a value</span>

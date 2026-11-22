@@ -131,10 +131,14 @@
 
 /* ---------- gallery ---------- */
 .gal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
-.gal-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px; }
+.gal-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 0 16px; }
 .gal-space { position: relative; }
 .gal-grid { display: grid; gap: 16px; padding: 12px 0 16px; will-change: transform; }
 .gal-card { overflow: hidden; }
+.gal-card .kb-cover { height: auto; aspect-ratio: 3 / 2; box-sizing: content-box; }
+.gal-card-fit .kb-cover img { object-fit: contain; }
+.gal-cover-mode { align-self: flex-start; }
+.gal-cover-mode .seg-btn:disabled { cursor: default; }
 
 /* ---------- calendar ---------- */
 .cal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
