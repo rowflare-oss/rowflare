@@ -627,6 +627,17 @@ app.get("/api/forms/:share", async c => {
   });
 });
 
+// The form page preloads the first records of each linked table; typing in the picker searches the rest here.
+app.get("/api/forms/:share/links/:field", async c => {
+  const { fields, schema, stub } = await loadShare(c.env, c.req.param("share"));
+  const f = fields.find(x => x.f.id === c.req.param("field") && x.f.type === "link")?.f;
+  if (!f?.options.linkedTableId) throw new HttpError(404, "Not found");
+  const primary = schema.tables.find(t => t.id === f.options.linkedTableId)?.primaryFieldId ?? "";
+  const search = (c.req.query("q") ?? "").slice(0, 200);
+  const q = unwrap(await stub.query(f.options.linkedTableId, { search, searchFieldIds: [primary], limit: 50 }));
+  return c.json(q.rows.map(r => ({ id: r.id, t: String(r.cells[primary] ?? "") })));
+});
+
 app.post("/api/forms/:share", async c => {
   const { share, stub, fields } = await loadShare(c.env, c.req.param("share"));
   const b = await body<{ cells: Record<string, unknown> }>(c);

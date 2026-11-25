@@ -58,8 +58,9 @@ export default function PublicForm({ shareId }: { shareId: string }) {
         members: [],
         upload,
         searchLinked: async (_t, q) => {
-          const s = q.trim().toLowerCase();
-          return s ? options.filter(o => o.t.toLowerCase().includes(s)) : options;
+          const s = q.trim();
+          if (!s) return options;
+          return get<LinkValue[]>(`/api/forms/${encodeURIComponent(shareId)}/links/${encodeURIComponent(f.id)}?q=${encodeURIComponent(s)}`);
         },
       };
     }

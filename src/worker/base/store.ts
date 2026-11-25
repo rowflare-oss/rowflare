@@ -77,6 +77,8 @@ export interface QueryInput {
   filters?: ViewConfig["filters"];
   sorts?: ViewConfig["sorts"];
   search?: string;
+  /** Limit `search` to these fields (public forms only expose the primary field). */
+  searchFieldIds?: string[];
   /** ANDed with the effective filters (explicit or the view's), so a caller can narrow a view. */
   extraFilters?: ViewConfig["filters"];
   /** Only records whose date span overlaps this window (calendar, timeline). */
@@ -530,7 +532,8 @@ export class BaseStore {
       where.push(r.sql);
       params.push(...r.params);
     }
-    const s = searchSql(q.search, [...fields.values()]);
+    const searched = q.searchFieldIds ? q.searchFieldIds.map(id => fields.get(id)).filter((x): x is Field => !!x) : [...fields.values()];
+    const s = searchSql(q.search, searched);
     if (s) { where.push(s.sql); params.push(...s.params); }
     // Group levels sort by display order, then by the raw key, so rows sharing a key are always consecutive.
     const offset = Number.isInteger(q.dayOffset) && Math.abs(q.dayOffset!) <= 1440 ? q.dayOffset! : 0;

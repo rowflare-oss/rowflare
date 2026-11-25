@@ -175,6 +175,30 @@ describe("HTTP API", () => {
     expect(before).toBe(240);
   });
 
+  it("searches past the preloaded records of a form's link field, on the primary field only", async () => {
+    const c = await signup("formlinks@example.com");
+    const ws = (await c.req("GET", "/api/auth/me")).json.workspaces[0];
+    const baseId = (await c.req("POST", `/api/workspaces/${ws.id}/bases`, { template: "project-tracker" })).json.id;
+    const base = await c.req("GET", `/api/bases/${baseId}`);
+    const form = base.json.schema.views.find((v: any) => v.type === "form");
+    const share = (await c.req("POST", `/api/bases/${baseId}/forms`, { viewId: form.id })).json.shareId;
+    const anon = new Client();
+    const def = (await anon.req("GET", `/api/forms/${share}`)).json;
+    const link = def.fields.find((f: any) => f.type === "link");
+    const tableId = link.options.linkedTableId;
+    const table = base.json.schema.tables.find((t: any) => t.id === tableId);
+    const other = base.json.schema.fields.find((f: any) => f.tableId === tableId && f.id !== table.primaryFieldId && f.type === "text");
+    const rows = Array.from({ length: 600 }, (_, i) => ({ cells: { [table.primaryFieldId]: `Bulk ${i}`, ...(other ? { [other.id]: "hidden-needle" } : {}) } }));
+    expect((await c.req("POST", `/api/bases/${baseId}/rows`, { op: "create", tableId, rows })).status).toBe(200);
+
+    expect((await anon.req("GET", `/api/forms/${share}`)).json.linkOptions[link.id].length).toBe(500);
+    const hit = await anon.req("GET", `/api/forms/${share}/links/${link.id}?q=${encodeURIComponent("Bulk 599")}`);
+    expect(hit.status).toBe(200);
+    expect(hit.json.map((r: any) => r.t)).toEqual(["Bulk 599"]);
+    if (other) expect((await anon.req("GET", `/api/forms/${share}/links/${link.id}?q=hidden-needle`)).json).toEqual([]);
+    expect((await anon.req("GET", `/api/forms/${share}/links/nope?q=x`)).status).toBe(404);
+  });
+
   it("keeps self-hosted signup closed after the first user when ALLOW_SIGNUP is false", async () => {
     // The test environment sets ALLOW_SIGNUP=true; the closed path is covered by checking the config flag logic.
     const cfg = await new Client().req("GET", "/api/config");
