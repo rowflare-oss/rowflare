@@ -173,7 +173,8 @@ export interface ViewConfig {
   widths?: Record<string, number>;
   rowHeight?: "short" | "medium" | "tall";
   groupFieldId?: string; // kanban
-  coverFieldId?: string; // kanban
+  coverFieldId?: string; // kanban, gallery
+  coverMode?: "crop" | "fit"; // gallery
   form?: { title?: string; description?: string; fields?: FormFieldConfig[]; submitText?: string; successText?: string; shareId?: string };
   dateFieldId?: string; // calendar, timeline: start date
   endDateFieldId?: string; // calendar, timeline: optional end date
