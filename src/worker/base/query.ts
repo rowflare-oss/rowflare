@@ -26,6 +26,26 @@ function isArrayField(f: Field): boolean {
   return false;
 }
 
+/** Text as compared case-insensitively: NFC, lower case. */
+export function foldText(s: string): string {
+  return s.normalize("NFC").toLowerCase();
+}
+
+/**
+ * SQL lower-casing `expr` for comparison with `foldText(needle)`. SQLite's lower() folds only A-Z, so each
+ * non-ASCII letter of the needle also gets a replace() of its upper-case form (Ö -> ö); letters not in the
+ * needle cannot affect a match. Only single letters are inlined, so no quote can reach the SQL.
+ */
+export function foldSql(expr: string, needle: string): string {
+  let out = expr;
+  for (const ch of new Set(foldText(needle))) {
+    if (ch.charCodeAt(0) < 128 || !/^\p{L}$/u.test(ch)) continue;
+    const up = ch.toUpperCase();
+    if (up !== ch && up.length === 1 && up.toLowerCase() === ch && /^\p{L}$/u.test(up)) out = `replace(${out}, '${up}', '${ch}')`;
+  }
+  return `lower(${out})`;
+}
+
 export type FilterKind = "text" | "number" | "date" | "time" | "bool" | "select" | "array" | "path";
 
 /** What filters need beyond the row itself. */
@@ -140,8 +160,8 @@ function conditionSql(f: Field, c: Condition, ctx?: FilterContext): SqlPart | nu
     case "array": {
       const item = f.type === "link" ? "json_extract(value, '$.id')" : f.type === "attachment" ? "json_extract(value, '$.name')" : "value";
       if (c.op === "contains" || c.op === "ncontains") {
-        const sql = `instr(lower(coalesce(${e}, '')), lower(?)) > 0`;
-        return { sql: c.op === "contains" ? sql : `NOT (${sql})`, params: [String(v)] };
+        const sql = `instr(${foldSql(`coalesce(${e}, '')`, String(v))}, ?) > 0`;
+        return { sql: c.op === "contains" ? sql : `NOT (${sql})`, params: [foldText(String(v))] };
       }
       const vals = list(v).map(x => (f.type === "link" ? Number(x) : x));
       const inList = `(${vals.map(() => "?").join(",")})`;
@@ -153,10 +173,11 @@ function conditionSql(f: Field, c: Condition, ctx?: FilterContext): SqlPart | nu
     }
     default: {
       const s = String(v);
-      if (c.op === "eq") return { sql: `lower(${e}) = lower(?)`, params: [s] };
-      if (c.op === "neq") return { sql: `(${e} IS NULL OR lower(${e}) <> lower(?))`, params: [s] };
-      if (c.op === "contains") return { sql: `instr(lower(${e}), lower(?)) > 0`, params: [s] };
-      if (c.op === "ncontains") return { sql: `(${e} IS NULL OR instr(lower(${e}), lower(?)) = 0)`, params: [s] };
+      const low = foldSql(e, s), n = foldText(s);
+      if (c.op === "eq") return { sql: `${low} = ?`, params: [n] };
+      if (c.op === "neq") return { sql: `(${e} IS NULL OR ${low} <> ?)`, params: [n] };
+      if (c.op === "contains") return { sql: `instr(${low}, ?) > 0`, params: [n] };
+      if (c.op === "ncontains") return { sql: `(${e} IS NULL OR instr(${low}, ?) = 0)`, params: [n] };
       if (cmp[c.op]) return { sql: `${e} ${cmp[c.op]} ?`, params: [s] };
       return null;
     }
@@ -180,21 +201,21 @@ export function filterSql(spec: FilterSpec | undefined, fields: Map<string, Fiel
 export function searchSql(search: string | undefined, fields: Field[]): SqlPart | null {
   const s = search?.trim();
   if (!s) return null;
-  const needle = s.toLowerCase();
+  const needle = foldText(s);
   const parts: SqlPart[] = [];
   // Each cell's own values: the row JSON also holds field ids, option ids and link ids, which must not match.
   // Linked records and lookups of them match on their titles, attachments on their file names.
   for (const f of fields) {
     if (!SEARCHED.has(f.type) || !isSafeId(f.id)) continue;
     parts.push({
-      sql: `EXISTS (SELECT 1 FROM json_each(data, '$.${f.id}') WHERE instr(lower(CASE type WHEN 'object' THEN coalesce(json_extract(value, '$.t'), json_extract(value, '$.name')) WHEN 'array' THEN NULL ELSE value END), ?) > 0)`,
+      sql: `EXISTS (SELECT 1 FROM json_each(data, '$.${f.id}') WHERE instr(${foldSql("CASE type WHEN 'object' THEN coalesce(json_extract(value, '$.t'), json_extract(value, '$.name')) WHEN 'array' THEN NULL ELSE value END", needle)}, ?) > 0)`,
       params: [needle],
     });
   }
   // Select cells store choice ids, so match choice names separately.
   for (const f of fields) {
     if (f.type !== "singleSelect" && f.type !== "multiSelect") continue;
-    const ids = (f.options.choices ?? []).filter(ch => ch.name.toLowerCase().includes(needle) && isSafeId(ch.id)).map(ch => ch.id);
+    const ids = (f.options.choices ?? []).filter(ch => foldText(ch.name).includes(needle) && isSafeId(ch.id)).map(ch => ch.id);
     if (!ids.length) continue;
     const inList = `(${ids.map(id => `'${id}'`).join(",")})`;
     parts.push(

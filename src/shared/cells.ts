@@ -120,12 +120,13 @@ export function coerceCell(field: Field, v: unknown, ctx: CoerceContext = {}): u
     case "email":
     case "url":
     case "phone": {
-      const s = Array.isArray(v) ? v.map(x => displayScalar(x)).join(", ") : displayScalar(v);
+      // NFC, so text typed or imported in decomposed form (o + combining diaeresis) matches searches for "ö".
+      const s = (Array.isArray(v) ? v.map(x => displayScalar(x)).join(", ") : displayScalar(v)).normalize("NFC");
       const t = field.type === "text" ? s.replace(/\r?\n/g, " ") : s.trim();
       return t === "" ? undefined : t;
     }
     case "longText": {
-      const s = Array.isArray(v) ? v.map(x => displayScalar(x)).join(", ") : displayScalar(v);
+      const s = (Array.isArray(v) ? v.map(x => displayScalar(x)).join(", ") : displayScalar(v)).normalize("NFC");
       return s === "" ? undefined : s;
     }
     case "number": {

@@ -13,6 +13,7 @@ const Verify = lazy(() => import("./pages/Auth").then(m => ({ default: m.Verify 
 const Invite = lazy(() => import("./pages/Auth").then(m => ({ default: m.Invite })));
 const Settings = lazy(() => import("./pages/Settings"));
 const PublicForm = lazy(() => import("./pages/PublicForm"));
+const SharedView = lazy(() => import("./pages/SharedView"));
 const BasePage = lazy(() => import("./base/BasePage"));
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
   else if ((m = match("/base/:baseId/automations/:autoId?", path))) page = <BasePage key={m.baseId} baseId={m.baseId} automations automationId={m.autoId} />;
   else if ((m = match("/base/:baseId/:tableId?/:viewId?", path))) page = <BasePage key={m.baseId} baseId={m.baseId} tableId={m.tableId} viewId={m.viewId} />;
   else if ((m = match("/form/:shareId", path))) page = <PublicForm shareId={m.shareId} />;
+  else if ((m = match("/share/:shareId", path))) page = <SharedView shareId={m.shareId} />;
   else if ((m = match("/invite/:inviteId", path))) page = <Invite inviteId={m.inviteId} />;
   else if (match("/login", path)) page = <Login />;
   else if (match("/signup", path)) page = <Signup />;

@@ -8,7 +8,7 @@
 // - lookups, rollups and formulas are materialized into the row and maintained incrementally;
 // - column-wide work (new formula, type conversion) runs in batches from the alarm handler.
 import { generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
-import type { Cells, Choice, Field, FieldOptions, FieldType, GroupLevel, JobInfo, LinkValue, MatchOptions, Member, Row, Schema, FilterSpec, Table, View, ViewConfig, ViewType, Dashboard, Widget } from "../../shared/types";
+import type { Cells, Choice, Field, FieldOptions, FieldType, GroupLevel, JobInfo, LinkValue, MatchOptions, Member, Row, Schema, FilterSpec, SharedViewPage, Table, View, ViewConfig, ViewType, Dashboard, Widget } from "../../shared/types";
 import { keyedFieldIds, keyTableOf, MATCH_TYPES, matchKey, validMatches } from "../../shared/matches";
 import { allowedEdges, MAX_PATH_DEPTH, pathFieldProblem } from "../../shared/paths";
 import { hopsTo, nodeKey, planOf, Reach, REACH_LIMITS, type PathPlan, type ReachLimits } from "./reach";
@@ -18,7 +18,7 @@ import { compileFormula, evaluate, FormulaError, type Compiled, type FieldRef, t
 import { aggregate } from "../../shared/rollup";
 import { isSafeId, newChoiceId, newDashboardId, newFieldId, newTableId, newViewId, newWidgetId } from "../../shared/ids";
 import { checkWidget, defaultSize, MAX_WIDGETS, SOURCE_KEYS, type LayoutItemInput, type WidgetInput, type WidgetPatch } from "../../shared/widgets";
-import { filterSql, orderSql, rangeSql, searchSql, sortExpr, valueExpr, type DateRange, type FilterContext } from "./query";
+import { filterSql, foldSql, foldText, orderSql, rangeSql, searchSql, sortExpr, valueExpr, type DateRange, type FilterContext } from "./query";
 import type { ButtonInfo } from "../../shared/automations";
 import { Aggregator, OTHER_KEY, validateAggregate, type AggregateInput, type AggregateResult, type GroupKey } from "./aggregate";
 import type { LimitInfo } from "../hosting";
@@ -850,6 +850,64 @@ export class BaseStore {
     return hops.map(h => ({ ...h, t: this.titlesOf(h.tableId, [h.id]).get(h.id) ?? "" }));
   }
 
+  // ---------- read-only share links ----------
+
+  /** Fields a share link shows: the view's visible fields in view order, without buttons. */
+  private sharedFields(view: View): Field[] {
+    const hidden = new Set(view.config.hidden ?? []);
+    return this.orderedFields(view.tableId, view).filter(f => !hidden.has(f.id) && f.type !== "button");
+  }
+
+  /** A page of a view for its read-only share link. Search covers visible fields only, so it cannot reveal hidden values. */
+  sharedPage(viewId: string, opts: { search?: string; offset?: number; limit?: number } = {}): SharedViewPage {
+    const view = this.view(viewId);
+    const fields = this.sharedFields(view);
+    const ids = this.query(view.tableId, { viewId, search: opts.search, searchFieldIds: fields.map(f => f.id), limit: 0 }).ids;
+    const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+    const limit = Math.max(1, Math.min(Math.floor(opts.limit ?? 100), 500));
+    const rows = this.getRows(view.tableId, ids.slice(offset, offset + limit));
+    const users = new Set<string>();
+    const out = rows.map(r => {
+      const cells: Record<string, unknown> = {};
+      for (const f of fields) {
+        const v = this.rawFromRow(f, r);
+        if (v === undefined || v === null) continue;
+        cells[f.id] = v;
+        if (f.type === "user") for (const u of Array.isArray(v) ? v : [v]) users.add(String(u));
+      }
+      return { id: r.id, cells };
+    });
+    const keep = ["choices", "includeTime", "resultType", "format", "precision", "symbol"] as const;
+    const shown = fields.map(f => {
+      const options: FieldOptions = {};
+      for (const k of keep) if (f.options[k] !== undefined) (options as Record<string, unknown>)[k] = f.options[k];
+      return { id: f.id, tableId: f.tableId, name: f.name, type: f.type, options, description: f.description, ord: f.ord };
+    });
+    return {
+      title: view.name,
+      table: this.table(view.tableId).name,
+      fields: shown,
+      rows: out,
+      users: [...users].map(id => ({ id, name: this.userName(id) === id ? "Unknown" : this.userName(id) })),
+      total: ids.length,
+    };
+  }
+
+  /** True when the file is in a visible attachment (or attachment lookup) cell of a record the view shows. */
+  sharedFile(viewId: string, rowId: number, key: string): boolean {
+    const view = this.view(viewId);
+    const row = this.getRows(view.tableId, [rowId])[0];
+    if (!row) return false;
+    const has = this.sharedFields(view).some(f => {
+      if (f.type !== "attachment" && f.type !== "lookup") return false;
+      const v = row.cells[f.id];
+      return Array.isArray(v) && v.some(x => typeof x === "object" && x !== null && (x as { key?: unknown }).key === key);
+    });
+    if (!has) return false;
+    // The record must still pass the view's filters.
+    return this.query(view.tableId, { viewId, limit: 0 }).ids.includes(rowId);
+  }
+
   /** Rows with every field, in view order, used by CSV / JSON export and the public API. */
   *iterateRows(tableId: string, viewId?: string, batch = 1000): Generator<Row[]> {
     const ids = this.query(tableId, { viewId, limit: 0 }).ids;
@@ -972,7 +1030,7 @@ export class BaseStore {
         const t = this.c.tables.get(lt);
         const pf = t && this.c.fields.get(t.primaryFieldId);
         if (!t || !pf || !isSafeId(pf.id)) return null;
-        const hit = this.one<{ id: number }>(`SELECT id FROM ${t.phys} WHERE lower(json_extract(data, '$.${pf.id}')) = lower(?) LIMIT 1`, text);
+        const hit = this.one<{ id: number }>(`SELECT id FROM ${t.phys} WHERE ${foldSql(`json_extract(data, '$.${pf.id}')`, text)} = ? LIMIT 1`, foldText(text));
         if (hit) return { id: hit.id, t: text };
         if (!typecast) return null;
         // Like Airtable typecast: unknown names create a new linked record, within the plan's record limit.

@@ -204,6 +204,18 @@ export interface View {
   ord: string;
 }
 
+/** One page of a view opened through its read-only share link: only the view's visible fields. */
+export interface SharedViewPage {
+  title: string;
+  table: string;
+  /** Visible fields in view order, with only the options needed to display values. */
+  fields: Field[];
+  rows: { id: number; cells: Record<string, unknown> }[];
+  /** Names for the user ids on this page. */
+  users: { id: string; name: string }[];
+  total: number;
+}
+
 export type AggFn = "count" | "countUnique" | "countEmpty" | "countFilled" | "sum" | "avg" | "min" | "max";
 export type DateBucket = "day" | "week" | "month" | "year";
 

@@ -2,17 +2,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { FilterSpec, GroupLevel, SortSpec, View } from "../../shared/types";
 import type { BaseClient } from "./client";
-import { Button, FieldIcon, Icon, Popover } from "../ui";
+import { del, get, post } from "../api";
+import { toast, toastError } from "../toast";
+import { Button, confirmDialog, copyText, FieldIcon, Icon, Popover, Spinner } from "../ui";
 import { FilterEditor } from "./FilterEditor";
 
 export function ViewToolbar({ client, view, search, setSearch, onAddRecord }: { client: BaseClient; view: View; search: string; setSearch: (s: string) => void; onAddRecord?: () => void }) {
-  const [open, setOpen] = useState<null | { kind: "hide" | "filter" | "sort" | "height" | "group"; anchor: HTMLElement }>(null);
+  const [open, setOpen] = useState<null | { kind: "hide" | "filter" | "sort" | "height" | "group" | "share"; anchor: HTMLElement }>(null);
   const filters = view.config.filters?.conditions.length ?? 0;
   const sorts = view.config.sorts?.length ?? 0;
   const hidden = view.config.hidden?.length ?? 0;
   const st = client.viewState(view.id);
   const count = st ? st.total ?? st.ids.length : undefined;
-  const toggle = (kind: "hide" | "filter" | "sort" | "height" | "group") => (e: React.MouseEvent<HTMLButtonElement>) => setOpen(o => (o?.kind === kind ? null : { kind, anchor: e.currentTarget }));
+  const toggle = (kind: "hide" | "filter" | "sort" | "height" | "group" | "share") => (e: React.MouseEvent<HTMLButtonElement>) => setOpen(o => (o?.kind === kind ? null : { kind, anchor: e.currentTarget }));
   const showGridTools = view.type !== "form";
   return (
     <div className="toolbar">
@@ -27,6 +29,7 @@ export function ViewToolbar({ client, view, search, setSearch, onAddRecord }: { 
           <div className="grow" />
           {count !== undefined && <span className="muted small toolbar-count">{count.toLocaleString()} record{count === 1 ? "" : "s"}</span>}
           <SearchBox value={search} onChange={setSearch} />
+          <Button small variant="ghost" icon="link" onClick={toggle("share")}>Share view</Button>
           <a className="btn btn-sm btn-ghost" href={`/api/bases/${client.baseId}/export.csv?tableId=${view.tableId}&viewId=${view.id}&name=${encodeURIComponent(client.table(view.tableId)?.name ?? "export")}`} title="Download CSV">
             <Icon name="download" size={14} />
           </a>
@@ -35,6 +38,7 @@ export function ViewToolbar({ client, view, search, setSearch, onAddRecord }: { 
       {open?.kind === "hide" && <HidePanel client={client} view={view} anchor={open.anchor} onClose={() => setOpen(null)} />}
       {open?.kind === "filter" && <FilterPanel client={client} view={view} anchor={open.anchor} onClose={() => setOpen(null)} />}
       {open?.kind === "sort" && <SortPanel client={client} view={view} anchor={open.anchor} onClose={() => setOpen(null)} />}
+      {open?.kind === "share" && <SharePanel client={client} view={view} anchor={open.anchor} onClose={() => setOpen(null)} />}
       {open?.kind === "group" && <GroupPanel client={client} view={view} anchor={open.anchor} onClose={() => setOpen(null)} />}
       {open?.kind === "height" && (
         <Popover anchor={open.anchor} onClose={() => setOpen(null)} className="menu">
@@ -46,6 +50,61 @@ export function ViewToolbar({ client, view, search, setSearch, onAddRecord }: { 
         </Popover>
       )}
     </div>
+  );
+}
+
+/** The view's read-only link: anyone with it sees the view's records and visible fields, without signing in. */
+function SharePanel({ client, view, anchor, onClose }: { client: BaseClient; view: View; anchor: HTMLElement; onClose: () => void }) {
+  const [url, setUrl] = useState<string | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const path = `/api/bases/${client.baseId}/views/${view.id}/share`;
+  useEffect(() => {
+    get<{ url: string | null }>(path).then(r => setUrl(r.url), e => (toastError(e), setUrl(null)));
+  }, [path]);
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const create = () => run(async () => setUrl((await post<{ url: string }>(path, {})).url));
+  const disable = () => {
+    if (!confirmDialog("Disable this link? People who have it will no longer see this view.")) return;
+    run(async () => {
+      await del(path);
+      setUrl(null);
+    });
+  };
+  return (
+    <Popover anchor={anchor} onClose={onClose} width={360} align="end">
+      <div className="share-panel">
+        <div className="share-panel-title">Read-only link</div>
+        <div className="muted small">
+          {url ? "Anyone with this link can see this view's records and visible fields, without an account. They cannot edit anything." : "Create a link so anyone can see this view without an account. Hidden fields and filtered-out records stay private."}
+        </div>
+        {url === undefined ? (
+          <Spinner size={14} />
+        ) : url ? (
+          <>
+            <input className="input" readOnly value={url} onFocus={e => e.currentTarget.select()} aria-label="View link" />
+            <div className="row">
+              <Button small icon="copy" onClick={() => { copyText(url); toast("Link copied"); }}>Copy</Button>
+              <Button small icon="expand" onClick={() => window.open(url, "_blank", "noopener")}>Open</Button>
+              <div className="grow" />
+              {client.writable && <Button small variant="danger" disabled={busy} onClick={disable}>Disable link</Button>}
+            </div>
+          </>
+        ) : client.writable ? (
+          <Button small variant="primary" icon="link" disabled={busy} onClick={create}>Create link</Button>
+        ) : (
+          <div className="muted small">Only editors can create a link.</div>
+        )}
+      </div>
+    </Popover>
   );
 }
 

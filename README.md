@@ -16,6 +16,7 @@ An open-source, Airtable-style database that runs on your own Cloudflare account
 - **Undo and redo** for edits, pastes, fills, moves, creates and deletes.
 - **Import** from CSV (types inferred) or directly from Airtable with a personal access token: tables, fields, records, links, lookups, rollups, formulas and attachments.
 - **Public forms** with a shareable link, no account needed.
+- **Read-only view links:** share any grid, kanban, calendar, timeline or gallery view as a searchable table. Hidden fields and filtered-out records stay private, and the link can be disabled at any time.
 - **REST API** modeled on the Airtable Web API, with personal access tokens.
 - **Dashboards**: number, bar, line, pie and summary-table widgets over any table, a shared date range, and click-through to the records behind each number.
 - **Automations**: run steps when records are created, change or start to match conditions, on a schedule, when a date is reached, when an app calls a webhook, or when someone clicks a button. Steps create, update and find records, send HTTP requests and email (Cloudflare Email Service, Resend or SMTP), with an if/otherwise branch, a run log, retries and loop protection.

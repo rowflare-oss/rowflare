@@ -3,7 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 import { BaseStore, UserError, type Actor, type FieldInput, type MutationResult, type QueryInput, type QueryResult, type RowInput } from "./base/store";
-import type { Cells, ClientMessage, Field, FieldOptions, FieldType, Member, Presence, Row, Schema, ServerMessage, ViewConfig, ViewType } from "../shared/types";
+import type { Cells, ClientMessage, Field, FieldOptions, FieldType, Member, Presence, Row, Schema, ServerMessage, SharedViewPage, ViewConfig, ViewType } from "../shared/types";
 import { COLORS } from "../shared/types";
 import { applyTemplate } from "./templates";
 import type { LayoutItemInput, WidgetInput, WidgetPatch } from "../shared/widgets";
@@ -326,6 +326,14 @@ export class BaseDO extends DurableObject<Env> {
 
   rows(tableId: string, ids: number[]): Result<Row[]> {
     return this.safe(() => this.store.getRows(tableId, ids));
+  }
+
+  sharedPage(viewId: string, opts: { search?: string; offset?: number; limit?: number }): Result<SharedViewPage> {
+    return this.safe(() => this.store.sharedPage(viewId, opts));
+  }
+
+  sharedFile(viewId: string, rowId: number, key: string): Result<boolean> {
+    return this.safe(() => this.store.sharedFile(viewId, rowId, key));
   }
 
   /** One chain of linked records from a record to one of its path lookup results; null when it is not a result. */

@@ -16,6 +16,8 @@ export interface EditorContext {
   noPreview?: boolean;
   /** Hide "Create option" in select pickers (public forms). */
   noCreate?: boolean;
+  /** Where attachments are read from, when not the signed-in file route (read-only view links). */
+  fileUrl?: (a: Attachment) => string;
 }
 
 export type Commit = (value: unknown, opts?: { typecast?: boolean }) => void;
@@ -82,7 +84,7 @@ export function CellDisplay({ field, value, members = [], ctx }: { field: Field;
     case "checkbox":
       return value ? <Icon name="check" className="check-on" /> : null;
     case "attachment":
-      return <AttachmentStrip list={value as Attachment[]} noPreview={ctx?.noPreview} />;
+      return <AttachmentStrip list={value as Attachment[]} noPreview={ctx?.noPreview} url={ctx?.fileUrl} />;
     case "url":
       return <a href={String(value)} target="_blank" rel="noreferrer noopener" onClick={e => e.stopPropagation()}>{String(value)}</a>;
     case "email":
@@ -90,24 +92,24 @@ export function CellDisplay({ field, value, members = [], ctx }: { field: Field;
     case "longText":
       return <span className="pre">{String(value)}</span>;
     case "lookup":
-      if (Array.isArray(value) && value.some(x => typeof x === "object" && x && "key" in x)) return <AttachmentStrip list={value as Attachment[]} noPreview={ctx?.noPreview} />;
+      if (Array.isArray(value) && value.some(x => typeof x === "object" && x && "key" in x)) return <AttachmentStrip list={value as Attachment[]} noPreview={ctx?.noPreview} url={ctx?.fileUrl} />;
       return <span className="chips">{(value as unknown[]).map((x, i) => <Chip key={i} name={x === true ? "checked" : String(x ?? "")} color="var(--chip)" />)}</span>;
     default:
       return <span>{cellText(field, value, members)}</span>;
   }
 }
 
-function AttachmentStrip({ list, noPreview, onRemove }: { list: Attachment[]; noPreview?: boolean; onRemove?: (a: Attachment) => void }) {
+function AttachmentStrip({ list, noPreview, onRemove, url = a => fileUrl(a.key) }: { list: Attachment[]; noPreview?: boolean; onRemove?: (a: Attachment) => void; url?: (a: Attachment) => string }) {
   return (
     <span className="attachments">
       {list.map(a => (
         <span key={a.id} className="attachment" title={a.name}>
           {!noPreview && isImage(a) ? (
-            <a href={fileUrl(a.key)} target="_blank" rel="noreferrer"><img src={fileUrl(a.key)} alt={a.name} loading="lazy" /></a>
+            <a href={url(a)} target="_blank" rel="noreferrer"><img src={url(a)} alt={a.name} loading="lazy" /></a>
           ) : noPreview ? (
             <span className="file-tile"><Icon name="attachment" size={14} /> {a.name}</span>
           ) : (
-            <a className="file-tile" href={fileUrl(a.key)} target="_blank" rel="noreferrer"><Icon name="attachment" size={14} /> {a.name}</a>
+            <a className="file-tile" href={url(a)} target="_blank" rel="noreferrer"><Icon name="attachment" size={14} /> {a.name}</a>
           )}
           {onRemove && (
             <button type="button" className="chip-x" onClick={() => onRemove(a)} aria-label={`Remove ${a.name}`}><Icon name="x" size={11} /></button>

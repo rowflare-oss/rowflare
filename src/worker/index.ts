@@ -29,7 +29,8 @@ export { BaseDO } from "./base-do";
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 const id = newId;
-const isSecure = (c: AppContext) => new URL(c.req.url).protocol === "https:";
+// Behind a TLS-terminating proxy (Docker + Caddy/nginx) the request arrives over http, so APP_URL decides too.
+const isSecure = (c: AppContext) => new URL(c.req.url).protocol === "https:" || /^https:/i.test(c.env.APP_URL ?? "");
 
 app.onError((err, c) => {
   if (err instanceof LimitError) return c.json({ error: err.message, limit: err.limit }, 402);
@@ -48,8 +49,8 @@ app.use("/api/*", async (c, next) => {
   c.set("user", auth?.user ?? null);
   c.set("via", auth?.via ?? null);
   const m = c.req.method;
-  // Webhooks and public forms authenticate otherwise; a hosting may add more exempt prefixes.
-  const exempt = c.req.path.startsWith("/api/forms/") || c.req.path.startsWith("/api/hooks/") || hostingExempt(c.req.path);
+  // Webhooks, public forms and read-only view links authenticate otherwise; a hosting may add more exempt prefixes.
+  const exempt = c.req.path.startsWith("/api/forms/") || c.req.path.startsWith("/api/shared/") || c.req.path.startsWith("/api/hooks/") || hostingExempt(c.req.path);
   // Sign-in posts need it too, without a session: a form on another site must not sign a visitor into someone else's account.
   const signIn = m === "POST" && SIGN_IN_PATHS.has(c.req.path);
   if ((auth?.via === "session" || signIn) && m !== "GET" && m !== "HEAD" && !exempt && c.req.header("x-rf") !== "1") throw new HttpError(403, "Missing x-rf header");
@@ -551,6 +552,10 @@ app.get("/api/files/*", async c => {
   const baseId = key.split("/")[0];
   // Files of a base are visible to its members, and to anyone holding a form link for uploads they just made.
   await baseAccess(c, baseId, "read");
+  return serveFile(c, key);
+});
+
+async function serveFile(c: AppContext, key: string): Promise<Response> {
   const obj = await c.env.FILES.get(key, { range: c.req.raw.headers, onlyIf: c.req.raw.headers });
   if (!obj) throw new HttpError(404, "File not found");
   const headers = new Headers();
@@ -562,7 +567,7 @@ app.get("/api/files/*", async c => {
   headers.set("X-Content-Type-Options", "nosniff");
   if (!("body" in obj)) return new Response(null, { status: 304, headers });
   return new Response(obj.body, { headers, status: c.req.header("Range") && obj.range ? 206 : 200 });
-});
+}
 
 // ---------- public forms ----------
 
@@ -658,6 +663,68 @@ app.post("/api/forms/:share", async c => {
 app.post("/api/forms/:share/attachments", async c => {
   const { share } = await loadShare(c.env, c.req.param("share"));
   return c.json(await storeUpload(c, share.base_id, share.workspace_id, { form: true }));
+});
+
+// ---------- read-only view links ----------
+// A share of a form view accepts submissions; a share of any other view is a read-only link to it.
+
+const viewShareUrl = (c: AppContext, shareId: string) => `${appOrigin(c)}/share/${shareId}`;
+
+async function sharableView(c: AppContext, need: "read" | "write") {
+  const a = await baseAccess(c, c.req.param("base")!, need);
+  const view = (await a.stub.schema()).views.find(v => v.id === c.req.param("view"));
+  if (!view || view.type === "form") throw new HttpError(404, "View not found");
+  const row = await c.env.DB.prepare("SELECT id FROM shares WHERE base_id = ? AND view_id = ?").bind(a.base.id, view.id).first<{ id: string }>();
+  return { a, view, shareId: row?.id ?? null };
+}
+
+app.get("/api/bases/:base/views/:view/share", async c => {
+  const { shareId } = await sharableView(c, "read");
+  return c.json({ shareId, url: shareId ? viewShareUrl(c, shareId) : null });
+});
+
+app.post("/api/bases/:base/views/:view/share", async c => {
+  const { a, view, shareId: existing } = await sharableView(c, "write");
+  let shareId = existing;
+  if (!shareId) {
+    shareId = randomToken(16);
+    await c.env.DB.prepare("INSERT INTO shares (id, base_id, table_id, view_id, created_at) VALUES (?, ?, ?, ?, ?)").bind(shareId, a.base.id, view.tableId, view.id, Date.now()).run();
+  }
+  return c.json({ shareId, url: viewShareUrl(c, shareId) });
+});
+
+app.delete("/api/bases/:base/views/:view/share", async c => {
+  const { a, view } = await sharableView(c, "write");
+  await c.env.DB.prepare("DELETE FROM shares WHERE base_id = ? AND view_id = ?").bind(a.base.id, view.id).run();
+  return c.json({ ok: true });
+});
+
+async function loadViewShare(env: Env, shareId: string) {
+  const share = await env.DB.prepare("SELECT base_id, view_id FROM shares WHERE id = ?").bind(shareId).first<{ base_id: string; view_id: string }>();
+  const gone = new HttpError(404, "This link is no longer available");
+  if (!share) throw gone;
+  const stub = stubFor(env, share.base_id);
+  const view = (await stub.schema()).views.find(v => v.id === share.view_id);
+  if (!view || view.type === "form") throw gone;
+  return { share, stub, view };
+}
+
+app.get("/api/shared/:share", async c => {
+  const { stub, view } = await loadViewShare(c.env, c.req.param("share"));
+  const search = (c.req.query("q") ?? "").slice(0, 200);
+  const offset = Number(c.req.query("offset") ?? 0) || 0;
+  c.header("Cache-Control", "no-store");
+  c.header("X-Robots-Tag", "noindex");
+  return c.json(unwrap(await stub.sharedPage(view.id, { search, offset, limit: 100 })));
+});
+
+app.get("/api/shared/:share/files/:row/*", async c => {
+  const { share, stub, view } = await loadViewShare(c.env, c.req.param("share"));
+  const prefix = `/api/shared/${c.req.param("share")}/files/${c.req.param("row")}/`;
+  const key = decodeURIComponent(c.req.path.slice(prefix.length));
+  const rowId = Number(c.req.param("row"));
+  if (!key.startsWith(`${share.base_id}/`) || !Number.isInteger(rowId) || !unwrap(await stub.sharedFile(view.id, rowId, key))) throw new HttpError(404, "File not found");
+  return serveFile(c, key);
 });
 
 // ---------- personal access tokens ----------
