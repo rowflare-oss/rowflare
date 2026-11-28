@@ -48,8 +48,10 @@ async function publicOnly(request) {
   }
   if (addresses.some(a => privateAddress(a.address))) return new Response("Requests to private network addresses are not allowed", { status: 403, headers: { "x-rowflare-blocked": "private" } });
   // The request comes from Miniflare's fetch implementation, so it is rebuilt for Node's.
+  // fetch sets content-length and host itself; forwarding them makes Node 22's undici reject every request with a body.
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
-  return fetch(request.url, { method: request.method, headers: [...request.headers], body, redirect: "manual" });
+  const headers = [...request.headers].filter(([k]) => k !== "content-length" && k !== "host");
+  return fetch(request.url, { method: request.method, headers, body, redirect: "manual" });
 }
 
 const mf = new Miniflare(
